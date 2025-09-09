@@ -4,14 +4,14 @@ import AVFoundation
 struct ContentView: View {
     @StateObject private var cameraManager = CameraManager()
     @StateObject private var faceDetectionManager = FaceDetectionManager()
+    @StateObject private var scanResultManager = ScanResultManager()
+    @EnvironmentObject var biometricAuthManager: BiometricAuthManager
 
     @State private var scannedCode: String?
     @State private var isScanning = true
     @State private var showingSettings = false
     @State private var showingHistory = false
     @State private var showingResult = false
-    @State private var capturedPhoto: UIImage?
-    @State private var scanResults: [ScanResult] = []
 
     // PiP Settings
     @AppStorage("pipPosition") private var pipPosition: PiPPosition = .topRight
@@ -43,10 +43,22 @@ struct ContentView: View {
                         PiPView(
                             cameraManager: cameraManager,
                             faceDetectionManager: faceDetectionManager,
-                            isVisible: $pipVisible,
-                            position: $pipPosition,
-                            size: $pipSize,
-                            opacity: $pipOpacity
+                            isVisible: Binding(
+                                get: { pipVisible },
+                                set: { pipVisible = $0 }
+                            ),
+                            position: Binding(
+                                get: { pipPosition },
+                                set: { pipPosition = $0 }
+                            ),
+                            size: Binding(
+                                get: { pipSize },
+                                set: { pipSize = $0 }
+                            ),
+                            opacity: Binding(
+                                get: { pipOpacity },
+                                set: { pipOpacity = $0 }
+                            )
                         ) { faceDetected in
                             handleFaceDetection(faceDetected)
                         }
@@ -68,7 +80,7 @@ struct ContentView: View {
             SettingsView()
         }
         .sheet(isPresented: $showingHistory) {
-            ScanHistoryView()
+            ScanHistoryView(scanResultManager: scanResultManager)
         }
         .alert("QR Code Detected", isPresented: $showingResult) {
             Button("OK") {
@@ -97,7 +109,6 @@ struct ContentView: View {
             // Camera preview
             QRCodeScannerView(
                 cameraManager: cameraManager,
-                faceDetectionManager: faceDetectionManager,
                 scannedCode: $scannedCode,
                 isScanning: $isScanning
             ) { code in
@@ -154,18 +165,34 @@ struct ContentView: View {
         VStack(spacing: 8) {
             // Mode indicator
             HStack {
-                Image(systemName: cameraManager.isQRScanningMode ? "qrcode.viewfinder" : "face.smiling")
-                    .foregroundColor(cameraManager.isQRScanningMode ? .green : .blue)
-                Text(cameraManager.isQRScanningMode ? "QR Scanning Mode" : "Face Detection Mode")
-                    .font(.caption)
-                    .foregroundColor(cameraManager.isQRScanningMode ? .green : .blue)
+                if cameraManager.isQRScanningMode {
+                    if cameraManager.isQRScanningEnabled {
+                        Image(systemName: "qrcode.viewfinder")
+                            .foregroundColor(.green)
+                        Text("QR Scanning Mode")
+                            .font(.caption)
+                            .foregroundColor(.green)
+                    } else {
+                        Image(systemName: "qrcode.viewfinder.slash")
+                            .foregroundColor(.orange)
+                        Text("QR Scanning Disabled")
+                            .font(.caption)
+                            .foregroundColor(.orange)
+                    }
+                } else {
+                    Image(systemName: "camera.fill")
+                        .foregroundColor(.blue)
+                    Text("Photo Capture Mode")
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                }
 
                 Spacer()
 
-                if !cameraManager.isDualSessionMode {
-                    Text("Single Session")
+                if !cameraManager.isQRScanningMode {
+                    Text("10s Timeout")
                         .font(.caption2)
-                        .foregroundColor(.orange)
+                        .foregroundColor(.red)
                 }
             }
             .padding(.horizontal, 8)
@@ -209,60 +236,52 @@ struct ContentView: View {
     }
 
     private var controlButtons: some View {
-        VStack(spacing: 10) {
-            // Main control row
-            HStack(spacing: 15) {
-                // Settings button
-                Button(action: { showingSettings = true }) {
-                    Image(systemName: "gearshape.fill")
+        HStack(spacing: 15) {
+            // Settings button
+            Button(action: { showingSettings = true }) {
+                Image(systemName: "gearshape.fill")
+                    .font(.title2)
+                    .foregroundColor(.white)
+                    .frame(width: 45, height: 45)
+                    .background(.ultraThinMaterial)
+                    .clipShape(Circle())
+            }
+
+            // Manual capture button
+            Button(action: manualCapture) {
+                Image(systemName: "camera.fill")
+                    .font(.title)
+                    .foregroundColor(.white)
+                    .frame(width: 60, height: 60)
+                    .background(.ultraThinMaterial)
+                    .clipShape(Circle())
+            }
+
+            // Scan QR Code button (only show when QR scanning is disabled)
+            if !cameraManager.isQRScanningEnabled {
+                Button(action: {
+                    print("🔍 Manual scan button tapped!")
+                    cameraManager.enableQRScanning()
+                }) {
+                    Image(systemName: "qrcode.viewfinder")
                         .font(.title2)
                         .foregroundColor(.white)
                         .frame(width: 45, height: 45)
-                        .background(.ultraThinMaterial)
+                        .background(Color.green)
                         .clipShape(Circle())
                 }
+            }
 
-                // Manual capture button
-                Button(action: manualCapture) {
-                    Image(systemName: "camera.fill")
-                        .font(.title)
-                        .foregroundColor(.white)
-                        .frame(width: 60, height: 60)
-                        .background(.ultraThinMaterial)
-                        .clipShape(Circle())
-                }
-
-                // Mode switch button (for single session devices)
-                if !cameraManager.isDualSessionMode {
-                    Button(action: {
-                        if cameraManager.isQRScanningMode {
-                            cameraManager.switchToFaceDetectionMode()
-                        } else {
-                            cameraManager.switchToQRScanningMode()
-                        }
-                    }) {
-                        Image(systemName: cameraManager.isQRScanningMode ? "face.smiling" : "qrcode.viewfinder")
-                            .font(.title2)
-                            .foregroundColor(.white)
-                            .frame(width: 45, height: 45)
-                            .background(.ultraThinMaterial)
-                            .clipShape(Circle())
+            // Mode switch button (for single session devices)
+            if !cameraManager.isDualSessionMode {
+                Button(action: {
+                    if cameraManager.isQRScanningMode {
+                        cameraManager.switchToFaceDetectionMode()
+                    } else {
+                        cameraManager.switchToQRScanningMode()
                     }
-                } else {
-                    // Restart back camera button (for debugging dual session mode)
-                    Button(action: { cameraManager.restartBackCamera() }) {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.title2)
-                            .foregroundColor(.white)
-                            .frame(width: 45, height: 45)
-                            .background(.ultraThinMaterial)
-                            .clipShape(Circle())
-                    }
-                }
-
-                // History button
-                Button(action: { showingHistory = true }) {
-                    Image(systemName: "clock.fill")
+                }) {
+                    Image(systemName: cameraManager.isQRScanningMode ? "face.smiling" : "qrcode.viewfinder")
                         .font(.title2)
                         .foregroundColor(.white)
                         .frame(width: 45, height: 45)
@@ -271,51 +290,23 @@ struct ContentView: View {
                 }
             }
 
-            // Debug control row
-            HStack(spacing: 15) {
-                // Force reset button (for debugging)
-                Button(action: { cameraManager.forceCameraReset() }) {
-                    Image(systemName: "power")
-                        .font(.title2)
-                        .foregroundColor(.white)
-                        .frame(width: 45, height: 45)
-                        .background(.ultraThinMaterial)
-                        .clipShape(Circle())
-                }
-
-                // Force single session mode button
-                Button(action: { cameraManager.forceSingleSessionMode() }) {
-                    Image(systemName: "1.circle")
-                        .font(.title2)
-                        .foregroundColor(.white)
-                        .frame(width: 45, height: 45)
-                        .background(.ultraThinMaterial)
-                        .clipShape(Circle())
-                }
-
-                // Test QR detection button
-                Button(action: { testQRDetection() }) {
-                    Image(systemName: "qrcode")
-                        .font(.title2)
-                        .foregroundColor(.white)
-                        .frame(width: 45, height: 45)
-                        .background(.ultraThinMaterial)
-                        .clipShape(Circle())
-                }
-
-                // Debug test button (more visible)
-                Button(action: {
-                    print("Debug button tapped!")
-                    testQRDetection()
-                }) {
-                    Text("TEST")
-                        .font(.caption)
-                        .fontWeight(.bold)
-                        .foregroundColor(.white)
-                        .frame(width: 45, height: 45)
-                        .background(Color.red)
-                        .clipShape(Circle())
-                }
+            // History button
+            Button(action: { showingHistory = true }) {
+                Image(systemName: "clock.fill")
+                    .font(.title2)
+                    .foregroundColor(.white)
+                    .frame(width: 45, height: 45)
+                    .background(.ultraThinMaterial)
+                    .clipShape(Circle())
+            }
+            // Logout button
+            Button(action: logout) {
+               Image(systemName: "rectangle.portrait.and.arrow.right")
+                   .font(.title2)
+                   .foregroundColor(.white)
+                   .frame(width: 45, height: 45)
+                   .background(.ultraThinMaterial)
+                   .clipShape(Circle())
             }
         }
         .padding(.bottom, 50)
@@ -335,11 +326,23 @@ struct ContentView: View {
         // Setup face detection manager callbacks
         faceDetectionManager.onFaceDetected = { detected, confidence in
             handleFaceDetection(detected)
+
+            // Auto-capture photo when face is detected in photo capture mode
+            if !cameraManager.isQRScanningMode && detected && confidence > 0.7 {
+                print("✅ Face detected with confidence \(confidence) - capturing photo")
+                cameraManager.capturePhoto()
+            }
         }
 
-        // Debug camera sessions
+        // Debug camera sessions and ensure they start
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             cameraManager.debugSessionStatus()
+
+            // Force start session if it's not running
+            if !cameraManager.isSessionRunning {
+                print("🔄 Session not running, forcing start...")
+                cameraManager.startSession()
+            }
         }
     }
 
@@ -350,23 +353,16 @@ struct ContentView: View {
             return
         }
 
-        // Check if face is detected before processing
-        if faceDetectionEnabled && !faceDetectionManager.isFaceQualityAcceptable() {
-            // Show face detection requirement
-            return
-        }
-
-        // Process QR code and capture photo
+        // QR code detected - app will automatically switch to photo capture mode
         scannedCode = code
-        cameraManager.capturePhoto()
+        print("🎯 QR Code detected: \(code) - Switching to photo capture mode")
 
-        // Show result
+        // The camera manager will handle the session switching automatically
+        // We just need to show the result
         showingResult = true
     }
 
     private func handlePhotoCaptured(_ photo: UIImage) {
-        capturedPhoto = photo
-
         // Create scan result
         if let code = scannedCode {
             let result = ScanResult(
@@ -376,61 +372,38 @@ struct ContentView: View {
                 scanDuration: 1.0 // This would be calculated from actual scan time
             )
 
-            scanResults.append(result)
-            saveScanResult(result)
+            // Save using ScanResultManager
+            scanResultManager.saveScanResult(result)
+            print("💾 Photo captured and scan result saved")
         }
     }
 
     private func handleFaceDetection(_ detected: Bool) {
+        print("🎭 Face detection triggered: \(detected)")
+
         // Update UI based on face detection status
         if detected && faceDetectionManager.faceCount > 1 {
             // Show warning for multiple faces
+            print("⚠️ Multiple faces detected")
         }
     }
 
     private func manualCapture() {
-        if let code = scannedCode {
-            cameraManager.capturePhoto()
-        } else {
-            // Just capture photo without QR code
-            cameraManager.capturePhoto()
-        }
+        cameraManager.capturePhoto()
     }
 
-    private func saveScanResult(_ result: ScanResult) {
-        // Save scan result to local storage
-        // This would typically use UserDefaults, Core Data, or FileManager
-    }
+    // Scan result saving is now handled by ScanResultManager
 
     private func openSettings() {
         if let settingsUrl = URL(string: UIApplication.openSettingsURLString) {
             UIApplication.shared.open(settingsUrl)
         }
     }
-
-    private func testQRDetection() {
-        print("Testing QR detection...")
-        print("Camera manager status:")
-        cameraManager.debugSessionStatus()
-        print("Face detection manager status:")
-        print("Face detected: \(faceDetectionManager.isFaceDetected)")
-        print("Face confidence: \(faceDetectionManager.faceConfidence)")
-        print("Face count: \(faceDetectionManager.faceCount)")
-
-        // Test Vision framework
-        cameraManager.testQRDetection()
-
-        // Test manual QR detection
-        cameraManager.testManualQRDetection()
-
-        // Test video data output delegate
-        cameraManager.testVideoDataOutputDelegate()
-
-        // Test video data output
-        cameraManager.testVideoDataOutput()
+    private func logout() {
+        biometricAuthManager.logout()
     }
 }
 
 #Preview {
     ContentView()
-} 
+}

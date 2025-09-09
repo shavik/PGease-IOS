@@ -12,6 +12,11 @@ struct PiPView: UIViewRepresentable {
 
     let onFaceDetected: (Bool) -> Void
 
+    // Make the view take minimal space in SwiftUI
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
     func makeUIView(context: Context) -> UIView {
         print("PiP makeUIView called")
         let view = UIView()
@@ -27,11 +32,20 @@ struct PiPView: UIViewRepresentable {
         view.frame = CGRect(origin: CGPoint(x: 20, y: 60), size: defaultSize)
         print("PiP initial frame: \(view.frame)")
 
-        // Create preview layer for the camera NOT being used for QR scanning
-        let pipSession = cameraManager.currentCameraPosition == .back ? cameraManager.frontCameraSession : cameraManager.backCameraSession
-        print("PiP View: Using \(cameraManager.currentCameraPosition == .back ? "front" : "back") camera session")
+        // Create preview layer for the PiP session (front camera)
+        // Only attach to session if we're in QR scanning mode
+        let pipSession = cameraManager.frontCameraSession
+        print("PiP View: Using front camera session")
         print("PiP session running: \(pipSession.isRunning)")
-        let previewLayer = AVCaptureVideoPreviewLayer(session: pipSession)
+        let previewLayer = AVCaptureVideoPreviewLayer()
+
+        // Only attach to session if we're NOT in QR scanning mode AND the session is running
+        if !cameraManager.isQRScanningMode && pipSession.isRunning {
+            previewLayer.session = pipSession
+            print("PiP preview layer attached to session (photo capture mode)")
+        } else {
+            print("PiP preview layer created without session (QR scanning mode or session not running)")
+        }
         previewLayer.videoGravity = .resizeAspectFill
         previewLayer.frame = view.bounds
         view.layer.addSublayer(previewLayer)
@@ -59,8 +73,20 @@ struct PiPView: UIViewRepresentable {
         return view
     }
 
+    func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
+        print("PiP dismantleUIView called - cleaning up session")
+        // Properly detach the preview layer from the session
+        if let previewLayer = uiView.layer.sublayers?.first as? AVCaptureVideoPreviewLayer {
+            previewLayer.session = nil
+            print("PiP preview layer session detached")
+        }
+    }
+
     func updateUIView(_ uiView: UIView, context: Context) {
         print("PiP updateUIView called - isVisible: \(isVisible), opacity: \(opacity)")
+
+        // PiPView should be visible all the time, but only attach to front camera when NOT in QR scanning mode
+        uiView.isHidden = !isVisible
 
         // Update preview layer frame and session
         if let previewLayer = uiView.layer.sublayers?.first as? AVCaptureVideoPreviewLayer {
@@ -68,14 +94,38 @@ struct PiPView: UIViewRepresentable {
             previewLayer.frame = uiView.bounds
             print("PiP preview layer frame: \(previewLayer.frame)")
 
-            // Update the session if camera position changed
-            let pipSession = cameraManager.currentCameraPosition == .back ? cameraManager.frontCameraSession : cameraManager.backCameraSession
-            if previewLayer.session != pipSession {
-                previewLayer.session = pipSession
-                print("PiP session updated to: \(cameraManager.currentCameraPosition == .back ? "front" : "back")")
-            }
+                                // PiPView should ONLY use front camera session when NOT in QR scanning mode
+            if !cameraManager.isQRScanningMode {
+                let frontCameraSession = cameraManager.frontCameraSession
+                print("PiP: Photo capture mode - checking session management...")
+                print("PiP: Current preview layer session: \(previewLayer.session == nil ? "nil" : "attached")")
+                print("PiP: Target front camera session: \(frontCameraSession)")
+                print("PiP: Front camera running: \(frontCameraSession.isRunning)")
 
-            print("PiP preview layer session running: \(previewLayer.session?.isRunning ?? false)")
+                // Only attach if the session is running and not already attached
+                if frontCameraSession.isRunning && previewLayer.session != frontCameraSession {
+                    print("PiP: Conditions met, attaching to front camera...")
+                    previewLayer.session = frontCameraSession
+                    print("PiP: Successfully attached to front camera session")
+                } else if !frontCameraSession.isRunning && previewLayer.session != nil {
+                    // Detach if session is not running
+                    print("PiP: Session not running, detaching...")
+                    previewLayer.session = nil
+                    print("PiP: Session detached (not running)")
+                } else {
+                    print("PiP: No session change needed")
+                }
+                print("PiP: Final preview layer session running: \(previewLayer.session?.isRunning ?? false)")
+            } else {
+                // In QR scanning mode, PiPView should have no session
+                print("PiP: QR scanning mode - detaching session...")
+                if previewLayer.session != nil {
+                    previewLayer.session = nil
+                    print("PiP: Session detached (QR scanning mode)")
+                } else {
+                    print("PiP: No session to detach")
+                }
+            }
         } else {
             print("PiP preview layer not found!")
         }
@@ -138,10 +188,6 @@ struct PiPView: UIViewRepresentable {
         } else {
             view.layer.borderColor = UIColor.red.cgColor
         }
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
     }
 
     class Coordinator: NSObject {
@@ -316,4 +362,4 @@ extension CGPoint {
         let dy = y - point.y
         return sqrt(dx * dx + dy * dy)
     }
-}
+} 

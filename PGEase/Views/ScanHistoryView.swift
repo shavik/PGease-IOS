@@ -1,28 +1,28 @@
 import SwiftUI
 
 struct ScanHistoryView: View {
-    @State private var scanResults: [ScanResult] = []
+    @ObservedObject var scanResultManager: ScanResultManager
     @State private var searchText = ""
     @State private var showingDetail = false
     @State private var selectedResult: ScanResult?
-    
+
     @Environment(\.dismiss) private var dismiss
-    
+
     var filteredResults: [ScanResult] {
         if searchText.isEmpty {
-            return scanResults
+            return scanResultManager.scanResults
         } else {
-            return scanResults.filter { result in
+            return scanResultManager.scanResults.filter { result in
                 result.qrCodeData.localizedCaseInsensitiveContains(searchText) ||
                 result.formattedTimestamp.localizedCaseInsensitiveContains(searchText)
             }
         }
     }
-    
+
     var body: some View {
         NavigationView {
             VStack {
-                if scanResults.isEmpty {
+                if scanResultManager.scanResults.isEmpty {
                     emptyStateView
                 } else {
                     scanResultsList
@@ -37,7 +37,7 @@ struct ScanHistoryView: View {
                         dismiss()
                     }
                 }
-                
+
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Menu {
                         Button("Export All", action: exportAllData)
@@ -48,21 +48,19 @@ struct ScanHistoryView: View {
                 }
             }
         }
-        .onAppear {
-            loadScanResults()
-        }
+        // Scan results are automatically loaded by ScanResultManager
     }
-    
+
     private var emptyStateView: some View {
         VStack(spacing: 20) {
             Image(systemName: "qrcode.viewfinder")
                 .font(.system(size: 60))
                 .foregroundColor(.secondary)
-            
+
             Text("No Scan History")
                 .font(.title2)
                 .fontWeight(.semibold)
-            
+
             Text("Your scanned QR codes and captured photos will appear here.")
                 .font(.body)
                 .foregroundColor(.secondary)
@@ -71,7 +69,7 @@ struct ScanHistoryView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-    
+
     private var scanResultsList: some View {
         List {
             ForEach(filteredResults) { result in
@@ -88,46 +86,25 @@ struct ScanHistoryView: View {
             }
         }
     }
-    
-    private func loadScanResults() {
-        // Load scan results from local storage
-        // This would typically use UserDefaults, Core Data, or FileManager
-        // For now, we'll create some sample data
-        scanResults = [
-            ScanResult(
-                qrCodeData: "https://example.com/qr1",
-                photoData: nil,
-                faceDetected: true,
-                scanDuration: 1.2
-            ),
-            ScanResult(
-                qrCodeData: "WiFi:T:WPA;S:MyNetwork;P:password123;;",
-                photoData: nil,
-                faceDetected: true,
-                scanDuration: 0.8
-            ),
-            ScanResult(
-                qrCodeData: "BEGIN:VCARD\nVERSION:3.0\nFN:John Doe\nTEL:+1234567890\nEND:VCARD",
-                photoData: nil,
-                faceDetected: false,
-                scanDuration: 2.1
-            )
-        ]
-    }
-    
+
+    // Scan results are automatically loaded by ScanResultManager
+
     private func deleteResults(offsets: IndexSet) {
-        scanResults.remove(atOffsets: offsets)
-        // Save updated results to storage
+        for index in offsets {
+            let result = scanResultManager.scanResults[index]
+            scanResultManager.deleteScanResult(result)
+        }
     }
-    
+
     private func exportAllData() {
-        // Export all scan results and photos
-        // Implementation would depend on your export requirements
+        if let exportURL = scanResultManager.exportResults() {
+            print("📤 Export completed: \(exportURL.path)")
+            // You could show a success message or share the file
+        }
     }
-    
+
     private func clearHistory() {
-        scanResults.removeAll()
-        // Clear from storage
+        scanResultManager.clearAllResults()
     }
 }
 
@@ -135,7 +112,7 @@ struct ScanHistoryView: View {
 struct ScanResultRow: View {
     let result: ScanResult
     let onTap: () -> Void
-    
+
     var body: some View {
         Button(action: onTap) {
             HStack(spacing: 12) {
@@ -155,21 +132,21 @@ struct ScanResultRow: View {
                                 .foregroundColor(.gray)
                         )
                 }
-                
+
                 VStack(alignment: .leading, spacing: 4) {
                     Text(result.qrCodePreview)
                         .font(.body)
                         .fontWeight(.medium)
                         .lineLimit(2)
                         .foregroundColor(.primary)
-                    
+
                     HStack {
                         Text(result.formattedTimestamp)
                             .font(.caption)
                             .foregroundColor(.secondary)
-                        
+
                         Spacer()
-                        
+
                         // Face detection indicator
                         if result.faceDetected {
                             Image(systemName: "face.smiling")
@@ -182,9 +159,9 @@ struct ScanResultRow: View {
                         }
                     }
                 }
-                
+
                 Spacer()
-                
+
                 Image(systemName: "chevron.right")
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -199,7 +176,7 @@ struct ScanResultRow: View {
 struct ScanResultDetailView: View {
     let result: ScanResult
     @Environment(\.dismiss) private var dismiss
-    
+
     var body: some View {
         NavigationView {
             ScrollView {
@@ -212,18 +189,18 @@ struct ScanResultDetailView: View {
                                 .aspectRatio(contentMode: .fit)
                                 .frame(maxHeight: 300)
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
-                            
+
                             Text("Captured Photo")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
                     }
-                    
+
                     // QR Code Data Section
                     VStack(alignment: .leading, spacing: 12) {
                         Text("QR Code Data")
                             .font(.headline)
-                        
+
                         Text(result.qrCodeData)
                             .font(.body)
                             .padding()
@@ -231,12 +208,12 @@ struct ScanResultDetailView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                             .textSelection(.enabled)
                     }
-                    
+
                     // Metadata Section
                     VStack(alignment: .leading, spacing: 12) {
                         Text("Scan Details")
                             .font(.headline)
-                        
+
                         VStack(spacing: 8) {
                             DetailRow(title: "Timestamp", value: result.formattedTimestamp)
                             DetailRow(title: "Scan Duration", value: String(format: "%.1f seconds", result.scanDuration))
@@ -244,14 +221,14 @@ struct ScanResultDetailView: View {
                             DetailRow(title: "Photo Captured", value: result.photo != nil ? "Yes" : "No")
                         }
                     }
-                    
+
                     // Action Buttons
                     HStack(spacing: 16) {
                         Button("Copy Data") {
                             UIPasteboard.general.string = result.qrCodeData
                         }
                         .buttonStyle(.bordered)
-                        
+
                         Button("Share") {
                             shareResult()
                         }
@@ -271,16 +248,16 @@ struct ScanResultDetailView: View {
             }
         }
     }
-    
+
     private func shareResult() {
         var items: [Any] = [result.qrCodeData]
-        
+
         if let photo = result.photo {
             items.append(photo)
         }
-        
+
         let activityVC = UIActivityViewController(activityItems: items, applicationActivities: nil)
-        
+
         if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
            let window = windowScene.windows.first {
             window.rootViewController?.present(activityVC, animated: true)
@@ -292,15 +269,15 @@ struct ScanResultDetailView: View {
 struct DetailRow: View {
     let title: String
     let value: String
-    
+
     var body: some View {
         HStack {
             Text(title)
                 .font(.body)
                 .foregroundColor(.secondary)
-            
+
             Spacer()
-            
+
             Text(value)
                 .font(.body)
                 .fontWeight(.medium)
@@ -309,5 +286,5 @@ struct DetailRow: View {
 }
 
 #Preview {
-    ScanHistoryView()
-} 
+    ScanHistoryView(scanResultManager: ScanResultManager())
+}

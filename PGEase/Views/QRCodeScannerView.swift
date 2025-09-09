@@ -5,7 +5,6 @@ import Vision
 
 struct QRCodeScannerView: UIViewRepresentable {
     @ObservedObject var cameraManager: CameraManager
-    @ObservedObject var faceDetectionManager: FaceDetectionManager
     @Binding var scannedCode: String?
     @Binding var isScanning: Bool
 
@@ -16,9 +15,9 @@ struct QRCodeScannerView: UIViewRepresentable {
         view.backgroundColor = .black
 
         // Create preview layer
-        let previewLayer = AVCaptureVideoPreviewLayer(session: cameraManager.currentQRSession)
+        let previewLayer = AVCaptureVideoPreviewLayer(session: cameraManager.backCameraSession)
         print("QR Scanner: Using \(cameraManager.currentCameraPosition == .back ? "back" : "front") camera session")
-        print("QR Scanner: Session running: \(cameraManager.currentQRSession.isRunning)")
+        print("QR Scanner: Session running: \(cameraManager.backCameraSession.isRunning)")
         previewLayer.videoGravity = .resizeAspectFill
         previewLayer.frame = view.bounds
         view.layer.addSublayer(previewLayer)
@@ -50,42 +49,46 @@ struct QRCodeScannerView: UIViewRepresentable {
         if let previewLayer = uiView.layer.sublayers?.first as? AVCaptureVideoPreviewLayer {
             previewLayer.frame = uiView.bounds
             print("QR Scanner: Updated preview layer frame: \(previewLayer.frame)")
-            print("QR Scanner: Session still running: \(previewLayer.session?.isRunning ?? false)")
+            print("QR Scanner: Current session running: \(previewLayer.session?.isRunning ?? false)")
+            print("QR Scanner: Back camera session running: \(cameraManager.backCameraSession.isRunning)")
+            print("QR Scanner: Front camera session running: \(cameraManager.frontCameraSession.isRunning)")
+            print("QR Scanner: Current mode - QR: \(cameraManager.isQRScanningMode), Photo: \(!cameraManager.isQRScanningMode)")
+
+            // QRCodeScannerView should ONLY use back camera session
+            if cameraManager.isQRScanningMode {
+                // Use back camera for QR scanning
+                if previewLayer.session != cameraManager.backCameraSession {
+                    if cameraManager.backCameraSession.isRunning {
+                        previewLayer.session = cameraManager.backCameraSession
+                        print("QR Scanner: Using back camera session for QR scanning")
+                    }
+                }
+            } else {
+                // In photo capture mode, QRCodeScannerView should have no session
+                print("QR Scanner: Photo capture mode - detaching session")
+                if previewLayer.session != nil {
+                    previewLayer.session = nil
+                    print("QR Scanner: Session detached (photo capture mode)")
+                } else {
+                    print("QR Scanner: No session to detach")
+                }
+            }
         }
     }
 
     private func handleQRCodeDetected(_ code: String) {
         guard isScanning else { return }
 
-        // Check if face is detected before processing QR code
-        if faceDetectionManager.isFaceQualityAcceptable() {
-            scannedCode = code
-            onQRCodeDetected(code)
+        // QR code detected - let the camera manager handle the flow
+        scannedCode = code
+        onQRCodeDetected(code)
 
-            // Capture photo when both QR code and face are detected
-            cameraManager.capturePhoto()
+        // Stop scanning temporarily
+        isScanning = false
 
-            // Stop scanning temporarily
-            isScanning = false
-
-            // For single session mode, switch to face detection after QR scan
-            if !cameraManager.isDualSessionMode {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    cameraManager.switchToFaceDetectionMode()
-                }
-            }
-
-            // Resume scanning after a delay
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                isScanning = true
-
-                // For single session mode, switch back to QR scanning
-                if !cameraManager.isDualSessionMode {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                        cameraManager.switchToQRScanningMode()
-                    }
-                }
-            }
+        // Resume scanning after a delay (camera manager will handle session switching)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            isScanning = true
         }
     }
 
@@ -177,4 +180,4 @@ class ScanningOverlayView: UIView {
     }
 }
 
- 
+
