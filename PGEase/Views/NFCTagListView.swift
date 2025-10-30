@@ -3,8 +3,8 @@ import SwiftUI
 /// View for listing and managing NFC tags
 /// Only accessible by MANAGER and PGADMIN roles
 struct NFCTagListView: View {
-    @StateObject private var nfcManager = NFCTagManager()
     @EnvironmentObject var authManager: AuthManager
+    @State private var nfcManager: NFCTagManager?
     
     @State private var tags: [NFCTagInfo] = []
     @State private var selectedStatus: TagStatusFilter = .all
@@ -79,12 +79,14 @@ struct NFCTagListView: View {
                     .environmentObject(authManager)
             }
             .sheet(isPresented: $showingTagDetail) {
-                if let tag = selectedTag {
+                // ✅ Only show if nfcManager is initialized
+                if let tag = selectedTag, let nfcManager = nfcManager {
                     NFCTagDetailView(tag: tag, nfcManager: nfcManager)
                 }
             }
             .sheet(isPresented: $showingDeactivateSheet) {
-                if let tag = selectedTag {
+                // ✅ Only show if nfcManager is initialized
+                if let tag = selectedTag, let nfcManager = nfcManager {
                     DeactivateTagSheet(tag: tag, nfcManager: nfcManager) {
                         showingDeactivateSheet = false
                         loadTags()
@@ -92,6 +94,10 @@ struct NFCTagListView: View {
                 }
             }
             .onAppear {
+                // ✅ Initialize NFCTagManager with authManager
+                if nfcManager == nil {
+                    nfcManager = NFCTagManager(authManager: authManager)
+                }
                 loadTags()
             }
             .refreshable {
@@ -129,7 +135,7 @@ struct NFCTagListView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 12) {
                 ForEach(TagStatusFilter.allCases, id: \.self) { status in
-                    FilterChip(
+                    StatusFilterChip(
                         title: status.rawValue,
                         isSelected: selectedStatus == status,
                         count: countForStatus(status)
@@ -214,12 +220,14 @@ struct NFCTagListView: View {
     // MARK: - Helper Methods
     
     private func loadTags() {
-        guard let pgId = authManager.currentUser?.pgId else { return }
+        // ✅ Safely unwrap nfcManager
+        guard let nfcManager = nfcManager else { return }
         
         isRefreshing = true
         
         Task {
-            if let fetchedTags = await nfcManager.listTags(pgId: pgId) {
+            // ✅ listTags() now uses authManager.currentPgId internally
+            if let fetchedTags = await nfcManager.listTags() {
                 await MainActor.run {
                     self.tags = fetchedTags
                     self.isRefreshing = false
@@ -233,9 +241,11 @@ struct NFCTagListView: View {
     }
     
     private func refreshTags() async {
-        guard let pgId = authManager.currentUser?.pgId else { return }
+        // ✅ Safely unwrap nfcManager
+        guard let nfcManager = nfcManager else { return }
         
-        if let fetchedTags = await nfcManager.listTags(pgId: pgId) {
+        // ✅ listTags() now uses authManager.currentPgId internally
+        if let fetchedTags = await nfcManager.listTags() {
             await MainActor.run {
                 self.tags = fetchedTags
             }
@@ -282,7 +292,7 @@ struct TagRow: View {
             
             // Status Badge
             VStack(alignment: .trailing, spacing: 4) {
-                StatusBadge(status: tag.status)
+                StatusBadgeNFCTag(status: tag.status)
                 
                 if tag.passwordSet {
                     HStack(spacing: 4) {
@@ -316,7 +326,7 @@ struct TagRow: View {
 
 // MARK: - Status Badge
 
-struct StatusBadge: View {
+struct StatusBadgeNFCTag: View {
     let status: String
     
     var body: some View {
@@ -353,7 +363,7 @@ struct StatusBadge: View {
 
 // MARK: - Filter Chip
 
-struct FilterChip: View {
+struct StatusFilterChip: View {
     let title: String
     let isSelected: Bool
     let count: Int
@@ -397,22 +407,22 @@ struct NFCTagDetailView: View {
         NavigationView {
             List {
                 Section("Tag Information") {
-                    DetailRow(label: "Tag ID", value: tag.tagId)
-                    DetailRow(label: "Status", value: tag.status)
+                    DetailRow(title: "Tag ID", value: tag.tagId)
+                    DetailRow(title: "Status", value: tag.status)
                     if let room = tag.room {
-                        DetailRow(label: "Room", value: room.number)
-                        DetailRow(label: "Room Type", value: room.type)
+                        DetailRow(title: "Room", value: room.number)
+                        DetailRow(title: "Room Type", value: room.type)
                     }
-                    DetailRow(label: "Password Set", value: tag.passwordSet ? "Yes" : "No")
+                    DetailRow(title: "Password Set", value: tag.passwordSet ? "Yes" : "No")
                 }
                 
                 Section("Timestamps") {
                     if let lastScanned = tag.lastScannedAt {
-                        DetailRow(label: "Last Scanned", value: lastScanned)
+                        DetailRow(title: "Last Scanned", value: lastScanned)
                     }
-                    DetailRow(label: "Created", value: tag.createdAt)
+                    DetailRow(title: "Created", value: tag.createdAt)
                     if let updated = tag.updatedAt {
-                        DetailRow(label: "Updated", value: updated)
+                        DetailRow(title: "Updated", value: updated)
                     }
                 }
                 
@@ -538,8 +548,8 @@ struct DeactivateTagSheet: View {
 
 struct NFCTagListView_Previews: PreviewProvider {
     static var previews: some View {
+        // Ensure AuthManager is provided for preview
         NFCTagListView()
             .environmentObject(AuthManager())
     }
 }
-

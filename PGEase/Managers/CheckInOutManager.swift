@@ -18,6 +18,8 @@ class CheckInOutManager: NSObject, ObservableObject {
     private let apiManager = APIManager.shared
     private let locationManager = CLLocationManager()
     private let biometricAuthManager = BiometricAuthManager()
+    private let webAuthnManager = WebAuthnManager()
+    private let onboardingManager = OnboardingManager()
     
     override init() {
         super.init()
@@ -69,23 +71,19 @@ class CheckInOutManager: NSObject, ObservableObject {
         }
         
         do {
-            // Authenticate with biometrics first
-            let biometricSuccess = await biometricAuthManager.authenticateUser(
-                reason: "Authenticate for check-in"
-            )
-            
-            guard biometricSuccess else {
-                await MainActor.run {
-                    self.isLoading = false
-                    self.errorMessage = "Biometric authentication failed"
-                }
-                return
-            }
-            
             guard let userId = getCurrentUserId() else {
                 await MainActor.run {
                     self.isLoading = false
                     self.errorMessage = "User ID not found"
+                }
+                return
+            }
+            
+            // ✅ Authenticate with WebAuthn (Face ID/Touch ID)
+            guard let credentialId = await webAuthnManager.authenticate(userId: userId) else {
+                await MainActor.run {
+                    self.isLoading = false
+                    self.errorMessage = "Biometric authentication failed"
                 }
                 return
             }
@@ -103,8 +101,8 @@ class CheckInOutManager: NSObject, ObservableObject {
                 userId: userId,
                 method: method,
                 nfcTagId: nfcTagId,
+                webAuthnCredentialId: credentialId, // ✅ NEW: WebAuthn proof
                 location: locationData,
-                biometricVerified: true,
                 deviceId: deviceId
             )
             
@@ -130,23 +128,19 @@ class CheckInOutManager: NSObject, ObservableObject {
         }
         
         do {
-            // Authenticate with biometrics first
-            let biometricSuccess = await biometricAuthManager.authenticateUser(
-                reason: "Authenticate for check-out"
-            )
-            
-            guard biometricSuccess else {
-                await MainActor.run {
-                    self.isLoading = false
-                    self.errorMessage = "Biometric authentication failed"
-                }
-                return
-            }
-            
             guard let userId = getCurrentUserId() else {
                 await MainActor.run {
                     self.isLoading = false
                     self.errorMessage = "User ID not found"
+                }
+                return
+            }
+            
+            // ✅ Authenticate with WebAuthn (Face ID/Touch ID) - SAME as check-in
+            guard let credentialId = await webAuthnManager.authenticate(userId: userId) else {
+                await MainActor.run {
+                    self.isLoading = false
+                    self.errorMessage = "Biometric authentication failed"
                 }
                 return
             }
@@ -164,8 +158,8 @@ class CheckInOutManager: NSObject, ObservableObject {
                 userId: userId,
                 method: method,
                 nfcTagId: nfcTagId,
+                webAuthnCredentialId: credentialId, // ✅ NEW: WebAuthn proof
                 location: locationData,
-                biometricVerified: true,
                 deviceId: deviceId
             )
             
@@ -241,7 +235,7 @@ class CheckInOutManager: NSObject, ObservableObject {
             
             if isVerified {
                 // Proceed with check-in using biometric verification
-                await checkIn(method: .manualManager, biometricVerified: true)
+                await checkIn(method: .manualManager)
             } else {
                 await MainActor.run {
                     self.isLoading = false
@@ -292,7 +286,7 @@ class CheckInOutManager: NSObject, ObservableObject {
             
             if isVerified {
                 // Proceed with check-out using biometric verification
-                await checkOut(method: .manualManager, biometricVerified: true)
+                await checkOut(method: .manualManager)
             } else {
                 await MainActor.run {
                     self.isLoading = false

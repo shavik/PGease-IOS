@@ -8,6 +8,13 @@ class AuthManager: ObservableObject {
     @Published var userRole: UserRole = .student
     @Published var errorMessage: String?
     
+    // ✅ Multi-PG Support (for PGADMIN & VENDOR only)
+    @Published var currentPgId: String?
+    @Published var currentPgName: String = "Loading..."
+    @Published var availablePGs: [UserPG] = []
+    @Published var isLoadingPGs = false
+    @Published var needsPGSwitcher = false // Only true for PGADMIN/VENDOR with multiple PGs
+    
     private let apiManager = APIManager.shared
     
     // MARK: - User Role
@@ -95,6 +102,11 @@ class AuthManager: ObservableObject {
             self.currentUser = user
             self.isAuthenticated = true
             self.userRole = UserRole(rawValue: user.role) ?? .student
+            
+            // ✅ Load user's PGs for multi-PG support
+            Task {
+                await loadUserPGs()
+            }
         }
     }
     
@@ -107,12 +119,62 @@ class AuthManager: ObservableObject {
         }
     }
     
+    func login(userId: String, role: String, pgId: String, pgName: String, userName: String) {
+        // Set authentication state
+        self.isAuthenticated = true
+        
+        // Set user role
+        if let userRole = UserRole(rawValue: role) {
+            self.userRole = userRole
+        }
+        
+        // Create and save current user
+        let user = CurrentUser(
+            id: userId,
+            name: userName,
+            email: nil, // Will be populated from API if needed
+            phoneNumber: nil,
+            role: role,
+            pgId: pgId,
+            pgName: pgName,
+            profileId: nil,
+            roomNumber: nil,
+            deviceId: UIDevice.current.identifierForVendor?.uuidString,
+            biometricSetup: false,
+            accessStatus: "ACTIVE"
+        )
+        
+        self.currentUser = user
+        self.currentPgId = pgId
+        self.currentPgName = pgName
+        
+        // Save to UserDefaults
+        if let encoded = try? JSONEncoder().encode(user) {
+            UserDefaults.standard.set(encoded, forKey: "currentUser")
+        }
+        
+        UserDefaults.standard.set(userId, forKey: "userId")
+        UserDefaults.standard.set(role, forKey: "userType")
+        UserDefaults.standard.set(pgId, forKey: "pgId")
+        
+        // Load PGs if multi-PG user
+        if userRole == .pgAdmin || userRole == .vendor {
+            Task {
+                await loadUserPGs()
+            }
+        }
+        
+        print("✅ User logged in: \(userName) (\(role))")
+    }
+    
     func logout() {
         // Clear all user data
         UserDefaults.standard.removeObject(forKey: "currentUser")
         UserDefaults.standard.removeObject(forKey: "studentId")
         UserDefaults.standard.removeObject(forKey: "staffId")
         UserDefaults.standard.removeObject(forKey: "userType")
+        UserDefaults.standard.removeObject(forKey: "userId")
+        UserDefaults.standard.removeObject(forKey: "pgId")
         UserDefaults.standard.removeObject(forKey: "deviceId")
         UserDefaults.standard.removeObject(forKey: "biometricSetupComplete")
         UserDefaults.standard.removeObject(forKey: "isCheckedIn")
@@ -120,6 +182,9 @@ class AuthManager: ObservableObject {
         self.currentUser = nil
         self.isAuthenticated = false
         self.userRole = .student
+        self.currentPgId = nil
+        self.currentPgName = "Loading..."
+        self.availablePGs = []
     }
     
     // MARK: - Role Detection
@@ -238,6 +303,69 @@ class AuthManager: ObservableObject {
         // This would call an API endpoint to check status
         // Return true if user is still active, false if deboarded
         return true
+    }
+    
+    // MARK: - Multi-PG Management
+    
+    /// Load user's PGs (only for PGADMIN & VENDOR with multiple PGs)
+    func loadUserPGs() async {
+        guard let userId = currentUser?.id else { return }
+        
+        await MainActor.run { isLoadingPGs = true }
+        
+        do {
+            let response = try await apiManager.getUserPGs(userId: userId)
+            
+            await MainActor.run {
+                self.availablePGs = response.data.pgs
+                
+                // Set current PG (primary or first available)
+                if let primaryPG = response.data.primaryPg {
+                    self.currentPgId = primaryPG.id
+                    self.currentPgName = primaryPG.name
+                } else if let firstPG = response.data.pgs.first {
+                    self.currentPgId = firstPG.id
+                    self.currentPgName = firstPG.name
+                }
+                
+                // ✅ Only show PG switcher for PGADMIN/VENDOR with multiple PGs
+                self.needsPGSwitcher = (userRole == .pgAdmin || userRole == .vendor) && response.data.pgs.count > 1
+                
+                self.isLoadingPGs = false
+            }
+        } catch {
+            await MainActor.run {
+                self.errorMessage = "Failed to load PGs: \(error.localizedDescription)"
+                self.isLoadingPGs = false
+            }
+        }
+    }
+    
+    /// Switch user's active PG (only for PGADMIN & VENDOR)
+    func switchPG(_ pgId: String) async {
+        guard let userId = currentUser?.id else { return }
+        
+        do {
+            let response = try await apiManager.switchPG(userId: userId, pgId: pgId)
+            
+            await MainActor.run {
+                self.currentPgId = pgId
+                if let pg = availablePGs.first(where: { $0.id == pgId }) {
+                    self.currentPgName = pg.name
+                }
+            }
+            
+            print("✅ Switched to PG: \(response.data?.newPgName ?? pgId)")
+        } catch {
+            await MainActor.run {
+                self.errorMessage = "Failed to switch PG: \(error.localizedDescription)"
+            }
+        }
+    }
+    
+    /// Check if current user needs multi-PG UI (PGADMIN/VENDOR only)
+    var shouldShowPGSwitcher: Bool {
+        return needsPGSwitcher && availablePGs.count > 1
     }
 }
 

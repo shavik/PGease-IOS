@@ -37,6 +37,7 @@ class OnboardingManager: ObservableObject {
     
     private let apiManager = APIManager.shared
     private let biometricAuthManager = BiometricAuthManager()
+    private let webAuthnManager = WebAuthnManager()
     
     init() {
         generateDeviceId()
@@ -151,97 +152,51 @@ class OnboardingManager: ObservableObject {
         }
         
         do {
-            // First, authenticate with local biometrics
-            let authSuccess = await biometricAuthManager.authenticateUser(
-                reason: "Setup biometric authentication for PGEase"
-            )
+            // ✅ NEW: Register WebAuthn passkey (works for ALL user types)
+            let userId: String?
             
-            guard authSuccess else {
+            if userType == .student {
+                userId = studentInfo?.id
+            } else {
+                userId = staffInfo?.id
+            }
+            
+            guard let userId = userId else {
                 await MainActor.run {
                     self.isLoading = false
-                    self.errorMessage = "Biometric authentication failed"
+                    self.errorMessage = "User ID not found"
                 }
                 return
             }
             
-            // Create biometric data with public signature (stored permanently)
-            let publicSignature = generateEnrollmentSignature()
-            let qualityScore = generateQualityScore(for: biometricAuthManager.biometricType)
-            
-            let biometricData = BiometricData(
-                method: biometricAuthManager.biometricTypeDescription,
-                template: publicSignature,
-                quality: qualityScore,
-                attempts: 1
+            // ✅ Register passkey with Face ID/Touch ID
+            let success = await webAuthnManager.registerPasskey(
+                userId: userId,
+                deviceName: UIDevice.current.name
             )
             
-            if userType == .student {
-                // Student biometric setup
-                guard let studentId = studentInfo?.id else {
-                    await MainActor.run {
-                        self.isLoading = false
-                        self.errorMessage = "Student ID not found"
-                    }
-                    return
-                }
-                
-                let response = try await apiManager.setupBiometric(
-                    studentId: studentId,
-                    biometricData: biometricData,
-                    deviceId: deviceId
-                )
-                
+            if success {
                 await MainActor.run {
-                    self.biometricData = biometricData
-                    self.accessStatus = response.data.accessStatus
                     self.isLoading = false
                     
-                    // Save biometric setup
-                    UserDefaults.standard.set(true, forKey: "biometricSetupComplete")
+                    // Save WebAuthn setup
+                    UserDefaults.standard.set(true, forKey: "webAuthnSetupComplete")
+                    UserDefaults.standard.set(userId, forKey: "userId")
                     
-                    // Move to next step
-                    switch response.data.accessStatus {
-                    case "PENDING_APPROVAL":
+                    // Check if approval is needed (for STUDENT/STAFF)
+                    if userType == .student || userType == .staff {
                         self.currentStep = .waitingForApproval
-                    case "ACTIVE":
+                        self.accessStatus = "PENDING_APPROVAL"
+                    } else {
+                        // Managers/Admins are auto-approved
+                        self.accessStatus = "ACTIVE"
                         self.completeOnboarding()
-                    default:
-                        self.currentStep = .waitingForApproval
                     }
                 }
             } else {
-                // Staff biometric setup
-                guard let staffId = staffInfo?.id else {
-                    await MainActor.run {
-                        self.isLoading = false
-                        self.errorMessage = "Staff ID not found"
-                    }
-                    return
-                }
-                
-                let response = try await apiManager.setupStaffBiometric(
-                    staffId: staffId,
-                    biometricData: biometricData,
-                    deviceId: deviceId
-                )
-                
                 await MainActor.run {
-                    self.biometricData = biometricData
-                    self.accessStatus = response.data.accessStatus
                     self.isLoading = false
-                    
-                    // Save biometric setup
-                    UserDefaults.standard.set(true, forKey: "biometricSetupComplete")
-                    
-                    // Move to next step
-                    switch response.data.accessStatus {
-                    case "PENDING_APPROVAL":
-                        self.currentStep = .waitingForApproval
-                    case "ACTIVE":
-                        self.completeOnboarding()
-                    default:
-                        self.currentStep = .waitingForApproval
-                    }
+                    self.errorMessage = "Failed to setup biometric authentication"
                 }
             }
             
@@ -678,6 +633,12 @@ class OnboardingManager: ObservableObject {
         return obfuscated.data(using: .utf8)?.base64EncodedString() ?? ""
     }
     
+    // Added new helper method as instructed
+    private func generateDeviceIdentifier(deviceId: String) -> String {
+        // Generate a consistent identifier for the device (hash)
+        return generateSHA256Hash(deviceId)
+    }
+    
     // MARK: - Computed Properties
     
     var isStudentOnboarded: Bool {
@@ -690,6 +651,43 @@ class OnboardingManager: ObservableObject {
     
     var isBiometricSetupComplete: Bool {
         return UserDefaults.standard.bool(forKey: "biometricSetupComplete")
+    }
+    
+    // MARK: - User Type
+    
+    // ✅ Expanded UserType enum to support all 8 roles
+    enum UserType: String, CaseIterable {
+        case student = "STUDENT"
+        case staff = "STAFF"
+        case manager = "MANAGER"
+        case warden = "WARDEN"
+        case accountant = "ACCOUNTANT"
+        case pgAdmin = "PGADMIN"
+        case vendor = "VENDOR"
+        case appAdmin = "APPADMIN"
+        
+        var displayName: String {
+            switch self {
+            case .student: return "Student"
+            case .staff: return "Staff"
+            case .manager: return "Manager"
+            case .warden: return "Warden"
+            case .accountant: return "Accountant"
+            case .pgAdmin: return "PG Admin"
+            case .vendor: return "Vendor"
+            case .appAdmin: return "App Admin"
+            }
+        }
+        
+        var requiresApproval: Bool {
+            // Only STUDENT and STAFF need manager approval
+            return self == .student || self == .staff
+        }
+        
+        var canHaveMultiplePGs: Bool {
+            // Only PGADMIN and VENDOR can be associated with multiple PGs
+            return self == .pgAdmin || self == .vendor
+        }
     }
 }
 
@@ -738,9 +736,3 @@ enum OnboardingStep: CaseIterable {
     }
 }
 
-// MARK: - User Type
-
-enum UserType {
-    case student
-    case staff
-}

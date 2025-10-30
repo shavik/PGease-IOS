@@ -20,6 +20,15 @@ class NFCTagManager: NSObject, ObservableObject {
     
     private let apiManager = APIManager.shared
     
+    // ✅ Multi-PG Support
+    private let authManager: AuthManager
+    
+    // ✅ Inject AuthManager for PG context
+    init(authManager: AuthManager) {
+        self.authManager = authManager
+        super.init()
+    }
+    
     // MARK: - NFC Operations
     
     enum NFCOperation {
@@ -44,7 +53,16 @@ class NFCTagManager: NSObject, ObservableObject {
     // MARK: - Generate NFC Tag
     
     /// Step 1: Generate a new NFC tag UUID and password from the backend
-    func generateNFCTag(roomId: String, pgId: String) async -> NFCTagWriteData? {
+    /// ✅ Now uses current PG context from AuthManager
+    func generateNFCTag(roomId: String) async -> NFCTagWriteData? {
+        // ✅ Get current PG ID from AuthManager
+        guard let pgId = authManager.currentPgId else {
+            await MainActor.run {
+                self.errorMessage = "No PG selected. Please select a PG first."
+            }
+            return nil
+        }
+        
         await MainActor.run {
             isLoading = true
             errorMessage = nil
@@ -151,7 +169,16 @@ class NFCTagManager: NSObject, ObservableObject {
     
     // MARK: - List NFC Tags
     
-    func listTags(pgId: String, status: String? = nil, roomId: String? = nil) async -> [NFCTagInfo]? {
+    /// ✅ Now uses current PG context from AuthManager (pgId param removed)
+    func listTags(status: String? = nil, roomId: String? = nil) async -> [NFCTagInfo]? {
+        // ✅ Get current PG ID from AuthManager
+        guard let pgId = authManager.currentPgId else {
+            await MainActor.run {
+                self.errorMessage = "No PG selected. Please select a PG first."
+            }
+            return nil
+        }
+        
         await MainActor.run {
             isLoading = true
             errorMessage = nil
@@ -251,7 +278,7 @@ class NFCTagManager: NSObject, ObservableObject {
     
     // MARK: - Helper Methods
     
-    private func stopScanning() {
+    func stopScanning() {
         nfcSession?.invalidate()
         nfcTagSession?.invalidate()
         isScanning = false
@@ -425,13 +452,13 @@ extension NFCTagManager: NFCTagReaderSessionDelegate {
             }
             
             // Now lock the tag with password
-            self.lockTag(tag, password: tagData.password, session: session)
+            self.lockTag(tag, password: tagData.password, tagUUID: tagData.tagUUID, session: session)
         }
     }
     
     // MARK: - Lock Tag with Password
     
-    private func lockTag(_ tag: NFCMiFareTag, password: String, session: NFCTagReaderSession) {
+    private func lockTag(_ tag: NFCMiFareTag, password: String, tagUUID: String, session: NFCTagReaderSession) {
         // Convert password to bytes (use first 4 bytes for MiFare Ultralight)
         guard let passwordData = password.data(using: .utf8) else {
             session.invalidate(errorMessage: "Invalid password format")
@@ -473,7 +500,7 @@ extension NFCTagManager: NFCTagReaderSessionDelegate {
                     
                     // Confirm to backend
                     Task {
-                        await self.confirmTagLocked(tagId: tagData.tagUUID)
+                        await self.confirmTagLocked(tagId: tagUUID)
                     }
                 }
             }

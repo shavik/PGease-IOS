@@ -2,7 +2,7 @@ import SwiftUI
 
 /// View for selecting user role (Student or Staff) during initial onboarding
 struct RoleSelectionView: View {
-    @Binding var selectedRole: OnboardingManager.UserType
+    @Binding var selectedRole: OnboardingManager.UserType?
     let onContinue: () -> Void
     
     @State private var hoveredRole: OnboardingManager.UserType?

@@ -3,8 +3,8 @@ import SwiftUI
 /// View for writing and locking NFC tags
 /// Only accessible by MANAGER and PGADMIN roles
 struct NFCTagWriteView: View {
-    @StateObject private var nfcManager = NFCTagManager()
     @EnvironmentObject var authManager: AuthManager
+    @State private var nfcManager: NFCTagManager?
     
     @State private var selectedRoomId: String = ""
     @State private var selectedPgId: String = ""
@@ -58,7 +58,13 @@ struct NFCTagWriteView: View {
                     dismissButton: .default(Text("OK"))
                 )
             }
-            .onChange(of: nfcManager.errorMessage) { error in
+            .onAppear {
+                // ✅ Initialize NFCTagManager with authManager
+                if nfcManager == nil {
+                    nfcManager = NFCTagManager(authManager: authManager)
+                }
+            }
+            .onChange(of: nfcManager?.errorMessage) { error in
                 if let error = error {
                     alertMessage = error
                     showAlert = true
@@ -197,9 +203,9 @@ struct NFCTagWriteView: View {
             // Tag Details
             if let tagData = generatedTagData {
                 VStack(spacing: 12) {
-                    DetailRow(label: "Room", value: tagData.roomNumber)
-                    DetailRow(label: "PG", value: tagData.pgName)
-                    DetailRow(label: "Tag UUID", value: String(tagData.tagUUID.prefix(8)) + "...")
+                    DetailRowNFCTag(label: "Room", value: tagData.roomNumber)
+                    DetailRowNFCTag(label: "PG", value: tagData.pgName)
+                    DetailRowNFCTag(label: "Tag UUID", value: String(tagData.tagUUID.prefix(8)) + "...")
                 }
                 .padding()
                 .background(Color.gray.opacity(0.1))
@@ -253,7 +259,7 @@ struct NFCTagWriteView: View {
                 .foregroundColor(.secondary)
             
             Button(action: {
-                nfcManager.stopScanning()
+                nfcManager?.stopScanning()
                 currentStep = .readyToWrite
             }) {
                 Text("Cancel")
@@ -281,8 +287,8 @@ struct NFCTagWriteView: View {
             
             if let tagData = generatedTagData {
                 VStack(spacing: 12) {
-                    DetailRow(label: "Room", value: tagData.roomNumber)
-                    DetailRow(label: "Status", value: "Active & Locked")
+                    DetailRowNFCTag(label: "Room", value: tagData.roomNumber)
+                    DetailRowNFCTag(label: "Status", value: "Active & Locked")
                 }
                 .padding()
                 .background(Color.green.opacity(0.1))
@@ -315,22 +321,17 @@ struct NFCTagWriteView: View {
     // MARK: - Actions
     
     private func generateTag() {
+        // ✅ Safely unwrap nfcManager
+        guard let nfcManager = nfcManager else { return }
+        
         currentStep = .generating
         
         Task {
-            // In real implementation, fetch roomId from API based on roomNumber
-            // For now, using placeholder
-            guard let pgId = authManager.currentUser?.pgId else {
-                alertMessage = "PG ID not found"
-                showAlert = true
-                currentStep = .selectRoom
-                return
-            }
-            
             // TODO: Fetch roomId from API based on roomNumber
             let roomId = "placeholder-room-id"
             
-            if let tagData = await nfcManager.generateNFCTag(roomId: roomId, pgId: pgId) {
+            // ✅ generateNFCTag now uses authManager.currentPgId internally (no pgId param)
+            if let tagData = await nfcManager.generateNFCTag(roomId: roomId) {
                 generatedTagData = tagData
                 currentStep = .readyToWrite
             } else {
@@ -340,7 +341,9 @@ struct NFCTagWriteView: View {
     }
     
     private func writeTag() {
-        guard let tagData = generatedTagData else { return }
+        // ✅ Safely unwrap nfcManager and tagData
+        guard let nfcManager = nfcManager,
+              let tagData = generatedTagData else { return }
         
         currentStep = .writing
         nfcManager.writeAndLockTag(tagData: tagData)
@@ -352,6 +355,9 @@ struct NFCTagWriteView: View {
     }
     
     private func monitorWriteStatus() {
+        // ✅ Safely unwrap nfcManager
+        guard let nfcManager = nfcManager else { return }
+        
         if let success = nfcManager.successMessage, success.contains("locked") {
             currentStep = .success
         } else if !nfcManager.isScanning && currentStep == .writing {
@@ -368,14 +374,16 @@ struct NFCTagWriteView: View {
         currentStep = .selectRoom
         roomNumber = ""
         generatedTagData = nil
-        nfcManager.successMessage = nil
-        nfcManager.errorMessage = nil
+        
+        // ✅ Safely unwrap nfcManager
+        nfcManager?.successMessage = nil
+        nfcManager?.errorMessage = nil
     }
 }
 
 // MARK: - Supporting Views
 
-struct DetailRow: View {
+struct DetailRowNFCTag: View {
     let label: String
     let value: String
     

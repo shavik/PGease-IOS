@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AuthenticationServices
 
 class APIManager: ObservableObject {
     static let shared = APIManager()
@@ -143,17 +144,19 @@ class APIManager: ObservableObject {
         userId: String,
         method: CheckInMethod,
         nfcTagId: String? = nil,
+        webAuthnCredentialId: String? = nil, // ✅ NEW: WebAuthn proof
         location: LocationData? = nil,
-        biometricVerified: Bool = false,
+        biometricVerified: Bool = false, // Keep for backward compatibility
         deviceId: String? = nil
     ) async throws -> CheckInOutResponse {
         var body: [String: Any] = [
             "userType": userType,
+            "userId": userId, // ✅ NEW: Universal user ID
             "method": method.rawValue,
             "biometricVerified": biometricVerified
         ]
         
-        // Add userId based on userType
+        // Add userId based on userType (for backward compatibility)
         if userType == "STUDENT" {
             body["studentId"] = userId
         } else if userType == "STAFF" {
@@ -162,6 +165,10 @@ class APIManager: ObservableObject {
         
         if let nfcTagId = nfcTagId {
             body["nfcTagId"] = nfcTagId
+        }
+        
+        if let webAuthnCredentialId = webAuthnCredentialId {
+            body["webAuthnCredentialId"] = webAuthnCredentialId // ✅ NEW: WebAuthn proof
         }
         
         if let deviceId = deviceId {
@@ -186,17 +193,19 @@ class APIManager: ObservableObject {
         userId: String,
         method: CheckInMethod,
         nfcTagId: String? = nil,
+        webAuthnCredentialId: String? = nil, // ✅ NEW: WebAuthn proof
         location: LocationData? = nil,
-        biometricVerified: Bool = false,
+        biometricVerified: Bool = false, // Keep for backward compatibility
         deviceId: String? = nil
     ) async throws -> CheckInOutResponse {
         var body: [String: Any] = [
             "userType": userType,
+            "userId": userId, // ✅ NEW: Universal user ID
             "method": method.rawValue,
             "biometricVerified": biometricVerified
         ]
         
-        // Add userId based on userType
+        // Add userId based on userType (for backward compatibility)
         if userType == "STUDENT" {
             body["studentId"] = userId
         } else if userType == "STAFF" {
@@ -205,6 +214,10 @@ class APIManager: ObservableObject {
         
         if let nfcTagId = nfcTagId {
             body["nfcTagId"] = nfcTagId
+        }
+        
+        if let webAuthnCredentialId = webAuthnCredentialId {
+            body["webAuthnCredentialId"] = webAuthnCredentialId // ✅ NEW: WebAuthn proof
         }
         
         if let deviceId = deviceId {
@@ -320,6 +333,98 @@ class APIManager: ObservableObject {
         )
     }
     
+    // MARK: - Multi-PG Management APIs
+    
+    // Get all PGs for a user
+    func getUserPGs(userId: String) async throws -> UserPGsResponse {
+        return try await makeRequest(
+            endpoint: "/user/pgs?userId=\(userId)",
+            method: .GET,
+            responseType: UserPGsResponse.self
+        )
+    }
+    
+    // Switch user's active PG
+    func switchPG(userId: String, pgId: String) async throws -> SwitchPGResponse {
+        let body = [
+            "userId": userId,
+            "pgId": pgId
+        ]
+        
+        return try await makeRequest(
+            endpoint: "/user/switch-pg",
+            method: .POST,
+            body: body,
+            responseType: SwitchPGResponse.self
+        )
+    }
+    
+    // MARK: - User/Member Management APIs
+    
+    // Create a new user (MANAGER, WARDEN, ACCOUNTANT, STAFF, STUDENT)
+    func createUser(
+        name: String,
+        email: String,
+        phone: String?,
+        role: String,
+        pgId: String,
+        createdBy: String
+    ) async throws -> CreateUserResponse {
+        let body: [String: Any] = [
+            "name": name,
+            "email": email,
+            "phone": phone ?? "",
+            "role": role,
+            "pgId": pgId,
+            "createdBy": createdBy
+        ]
+        
+        return try await makeRequest(
+            endpoint: "/users/create",
+            method: .POST,
+            body: body,
+            responseType: CreateUserResponse.self
+        )
+    }
+    
+    // Generate invite for any user
+    func generateInvite(userId: String, createdBy: String) async throws -> GenerateInviteResponse {
+        let body: [String: Any] = [
+            "userId": userId,
+            "createdBy": createdBy
+        ]
+        
+        return try await makeRequest(
+            endpoint: "/users/generate-invite",
+            method: .POST,
+            body: body,
+            responseType: GenerateInviteResponse.self
+        )
+    }
+    
+    // Get invite status for a user
+    func getUserInviteStatus(userId: String) async throws -> InviteStatusResponse {
+        return try await makeRequest(
+            endpoint: "/users/generate-invite?userId=\(userId)",
+            method: .GET,
+            responseType: InviteStatusResponse.self
+        )
+    }
+    
+    // List all users/members for a PG
+    func listUsers(pgId: String, role: String? = nil) async throws -> UsersListResponse {
+        var endpoint = "/pg/\(pgId)/users"
+        if let role = role {
+            endpoint += "?role=\(role)"
+        }
+        
+        return try await makeRequest(
+            endpoint: endpoint,
+            method: .GET,
+            responseType: UsersListResponse.self
+        )
+    }
+    
     // MARK: - NFC Tag Management APIs
     
     func generateNFCTag(roomId: String, pgId: String) async throws -> GenerateNFCTagResponse {
@@ -419,6 +524,99 @@ class APIManager: ObservableObject {
             method: .PUT,
             body: body,
             responseType: DeactivateNFCTagResponse.self
+        )
+    }
+    
+    // MARK: - WebAuthn APIs (Universal for all user types)
+    
+    func getWebAuthnRegistrationOptions(
+        userId: String,
+        deviceName: String
+    ) async throws -> RegistrationOptionsResponse {
+        let body = [
+            "userId": userId,
+            "deviceName": deviceName
+        ]
+        
+        return try await makeRequest(
+            endpoint: "/webauthn/registration/options",
+            method: .POST,
+            body: body,
+            responseType: RegistrationOptionsResponse.self
+        )
+    }
+    
+    func verifyWebAuthnRegistration(
+        userId: String,
+        credential: ASAuthorizationPlatformPublicKeyCredentialRegistration,
+        deviceName: String
+    ) async throws -> Bool {
+        // Convert credential to JSON format
+        let credentialJSON: [String: Any] = [
+            "id": credential.credentialID.base64URLEncodedString(),
+            "rawId": credential.credentialID.base64URLEncodedString(),
+            "type": "public-key",
+            "response": [
+                "clientDataJSON": credential.rawClientDataJSON.base64URLEncodedString(),
+                "attestationObject": credential.rawAttestationObject?.base64URLEncodedString() ?? "",
+                "transports": ["internal"]
+            ]
+        ]
+        
+        let body: [String: Any] = [
+            "userId": userId,
+            "credential": credentialJSON,
+            "deviceName": deviceName
+        ]
+        
+        let response: WebAuthnVerifyResponse = try await makeRequest(
+            endpoint: "/webauthn/registration/verify",
+            method: .POST,
+            body: body,
+            responseType: WebAuthnVerifyResponse.self
+        )
+        
+        return response.verified
+    }
+    
+    func getWebAuthnAuthenticationOptions(userId: String) async throws -> AuthenticationOptionsResponse {
+        let body = ["userId": userId]
+        
+        return try await makeRequest(
+            endpoint: "/webauthn/authentication/options",
+            method: .POST,
+            body: body,
+            responseType: AuthenticationOptionsResponse.self
+        )
+    }
+    
+    func verifyWebAuthnAuthentication(
+        userId: String,
+        assertion: ASAuthorizationPlatformPublicKeyCredentialAssertion
+    ) async throws -> WebAuthnAuthResult {
+        // Convert assertion to JSON format
+        let assertionJSON: [String: Any] = [
+            "id": assertion.credentialID.base64URLEncodedString(),
+            "rawId": assertion.credentialID.base64URLEncodedString(),
+            "type": "public-key",
+            "response": [
+                "clientDataJSON": assertion.rawClientDataJSON.base64URLEncodedString(),
+                "authenticatorData": assertion.rawAuthenticatorData.base64URLEncodedString(),
+                "signature": assertion.signature.base64URLEncodedString(),
+                "userHandle": assertion.userID?.base64URLEncodedString() ?? ""
+            ]
+        ]
+        
+        let body: [String: Any] = [
+            "userId": userId,
+            "credential": assertionJSON
+        ]
+        
+        return try await makeRequest(
+            endpoint: "/webauthn/authentication/verify",
+            method: .POST,
+            body: body,
+            responseType: WebAuthnAuthResult.self
         )
     }
 }
@@ -733,3 +931,175 @@ struct DeactivateNFCTagData: Codable {
     let reason: String?
     let deactivatedAt: String
 }
+
+// MARK: - WebAuthn Response Models
+
+struct RegistrationOptionsResponse: Codable {
+    let success: Bool
+    let options: RegistrationOptions
+}
+
+struct WebAuthnVerifyResponse: Codable {
+    let success: Bool
+    let verified: Bool
+    let message: String
+    let data: WebAuthnCredentialData?
+    
+    struct WebAuthnCredentialData: Codable {
+        let credentialId: String
+        let deviceName: String?
+        let createdAt: String
+    }
+}
+
+struct AuthenticationOptionsResponse: Codable {
+    let success: Bool
+    let options: AuthenticationOptions
+}
+
+struct WebAuthnAuthResult: Codable {
+    let success: Bool
+    let verified: Bool
+    let credentialId: String
+    let user: UserInfo
+    
+    struct UserInfo: Codable {
+        let id: String
+        let name: String
+        let email: String
+        let role: String
+    }
+}
+
+// MARK: - Multi-PG Response Models
+
+struct UserPGsResponse: Codable {
+    let success: Bool
+    let data: UserPGsData
+    
+    struct UserPGsData: Codable {
+        let userId: String
+        let userName: String
+        let email: String
+        let role: String
+        let isAppAdmin: Bool
+        let primaryPg: PrimaryPG?
+        let pgs: [UserPG]
+        let totalPGs: Int
+    }
+    
+    struct PrimaryPG: Codable {
+        let id: String
+        let name: String
+    }
+}
+
+struct UserPG: Codable, Identifiable {
+    let id: String
+    let name: String
+    let address: String?
+    let status: String
+    let role: String
+    let isPrimary: Bool
+    let isActive: Bool
+    let joinedAt: String?
+    let accessType: String?
+}
+
+struct SwitchPGResponse: Codable {
+    let success: Bool
+    let message: String
+    let data: SwitchPGData?
+    
+    struct SwitchPGData: Codable {
+        let userId: String
+        let newPgId: String
+        let newPgName: String
+        let previousPgId: String?
+        let switchedAt: String
+    }
+}
+
+// MARK: - User/Member Management Response Models
+
+struct CreateUserResponse: Codable {
+    let success: Bool
+    let userId: String
+    let message: String
+    let requiresInvite: Bool
+    let userRole: String
+}
+
+struct GenerateInviteResponse: Codable {
+    let success: Bool
+    let data: InviteData
+    let message: String
+    
+    struct InviteData: Codable {
+        let inviteCode: String
+        let qrCode: String
+        let deepLink: String
+        let expiresAt: String
+        let user: InviteUser
+    }
+    
+    struct InviteUser: Codable {
+        let id: String
+        let name: String
+        let email: String
+        let role: String
+    }
+}
+
+struct InviteStatusResponse: Codable {
+    let success: Bool
+    let hasInvite: Bool
+    let data: InviteStatusData?
+    let message: String?
+    
+    struct InviteStatusData: Codable {
+        let inviteCode: String
+        let qrCode: String?
+        let deepLink: String?
+        let expiresAt: String
+        let usedAt: String?
+        let isExpired: Bool
+        let isUsed: Bool
+        let user: InviteUser
+    }
+    
+    struct InviteUser: Codable {
+        let id: String
+        let name: String
+        let email: String
+        let role: String
+    }
+}
+
+struct UsersListResponse: Codable {
+    let success: Bool
+    let users: [UserListItem]
+    let count: Int
+}
+
+struct UserListItem: Codable, Identifiable {
+    let id: String
+    let name: String
+    let email: String
+    let phone: String?
+    let role: String
+    let status: String
+    let accessStatus: String?
+    let inviteStatus: InviteStatus?
+    let createdAt: String
+    let updatedAt: String
+}
+
+struct InviteStatus: Codable {
+    let hasInvite: Bool
+    let inviteCode: String?
+    let isUsed: Bool
+    let isExpired: Bool
+    let expiresAt: String?
+}
+
