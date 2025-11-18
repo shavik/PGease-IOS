@@ -167,6 +167,12 @@ struct RoleBasedMainView: View {
                     .onAppear {
                         // Set the user type in CheckInOutManager
                         checkInOutManager.userType = authManager.userRole == .student ? "STUDENT" : "STAFF"
+                        checkInOutManager.userId = authManager.currentUser?.id
+                        checkInOutManager.profileId = authManager.currentUser?.profileId
+                    }
+                    .onReceive(authManager.$currentUser) { user in
+                        checkInOutManager.userId = user?.id
+                        checkInOutManager.profileId = user?.profileId
                     }
                 
             case .manager, .pgAdmin:
@@ -207,6 +213,13 @@ struct ManagerTabView: View {
                         Label("Dashboard", systemImage: "house.fill")
                     }
                 
+                // Attendance
+                DailyAttendanceView()
+                    .tabItem {
+                        Label("Attendance", systemImage: "checkmark.circle.fill")
+                    }
+                    .environmentObject(authManager)
+                
                 // Members Management (replaces Students & Staff tabs)
                 MembersManagementView()
                     .tabItem {
@@ -214,10 +227,10 @@ struct ManagerTabView: View {
                     }
                     .environmentObject(authManager)
                 
-                // NFC Tags
-                NFCTagListView()
+                // Rooms
+                RoomsListView()
                     .tabItem {
-                        Label("NFC Tags", systemImage: "wave.3.right")
+                        Label("Rooms", systemImage: "building.2.fill")
                     }
                 
                 // Profile
@@ -238,10 +251,12 @@ struct WardenTabView: View {
     
     var body: some View {
         TabView {
-            Text("Attendance")
+            // Attendance
+            DailyAttendanceView()
                 .tabItem {
                     Label("Attendance", systemImage: "checkmark.circle.fill")
                 }
+                .environmentObject(authManager)
             
             // Members Management (limited to STAFF/STUDENT)
             MembersManagementView()
@@ -355,6 +370,15 @@ struct ProfileView: View {
                         Text("Name: \(user.name)")
                         Text("Role: \(authManager.userRole.displayName)")
                         Text("PG: \(user.pgName)")
+                    }
+                }
+                
+                if authManager.userRole == .pgAdmin {
+                    Section("PG Management") {
+                        NavigationLink("Edit PG Details") {
+                            PGDetailsEditView()
+                                .environmentObject(authManager)
+                        }
                     }
                 }
                 

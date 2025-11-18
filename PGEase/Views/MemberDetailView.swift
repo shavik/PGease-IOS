@@ -19,6 +19,21 @@ struct MemberDetailView: View {
     @State private var errorMessage = ""
     @State private var showInviteShare = false
     
+    // Room assignment
+    @State private var currentRoom: BasicRoomInfo?
+    @State private var availableRooms: [AvailableRoom] = []
+    @State private var isLoadingRooms = false
+    @State private var isAssigningRoom = false
+    @State private var showRoomPicker = false
+    @State private var selectedRoomId: String?
+    
+    // Room swap
+    @State private var showSwapSheet = false
+    @State private var isSwappingRoom = false
+    @State private var swapCandidates: [StudentSwapCandidate] = []
+    @State private var selectedSwapCandidate: StudentSwapCandidate?
+    
+    
     var body: some View {
         NavigationView {
             ScrollView {
@@ -68,13 +83,18 @@ struct MemberDetailView: View {
                     .cornerRadius(12)
                     .padding(.horizontal)
                     
+                    // Room Assignment (only for students, only for PG Admin/Manager)
+                    if member.role == "STUDENT" && (authManager.userRole == .pgAdmin || authManager.userRole == .manager) {
+                        roomAssignmentSection
+                    }
+                    
                     // Invite Status
                     VStack(alignment: .leading, spacing: 16) {
                         SectionHeader(title: "Invite Status")
                         
                         if let inviteStatus = member.inviteStatus {
                             if inviteStatus.isUsed {
-                                // Invite used - show success
+                                // Invite used - show success with regenerate option
                                 HStack {
                                     Image(systemName: "checkmark.circle.fill")
                                         .foregroundColor(.green)
@@ -91,6 +111,25 @@ struct MemberDetailView: View {
                                 .padding()
                                 .background(Color.green.opacity(0.1))
                                 .cornerRadius(12)
+                                
+                                // Regenerate button (for creating a new invite)
+                                Button(action: generateInvite) {
+                                    HStack {
+                                        if isGeneratingInvite {
+                                            ProgressView()
+                                                .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                        }
+                                        Image(systemName: "arrow.clockwise")
+                                        Text(isGeneratingInvite ? "Generating..." : "Generate New Invite")
+                                            .fontWeight(.semibold)
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .padding()
+                                    .background(Color.blue)
+                                    .foregroundColor(.white)
+                                    .cornerRadius(12)
+                                }
+                                .disabled(isGeneratingInvite)
                                 
                             } else if inviteStatus.isExpired {
                                 // Invite expired
@@ -231,6 +270,267 @@ struct MemberDetailView: View {
             } message: {
                 Text(errorMessage)
             }
+            .sheet(isPresented: $showRoomPicker) {
+                roomPickerSheet
+            }
+            .task {
+                if member.role == "STUDENT" {
+                    await loadStudentRoom()
+                    await loadAvailableRooms()
+                }
+            }
+        }
+    }
+    
+    // MARK: - Room Assignment Section
+    
+    private var roomAssignmentSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SectionHeader(title: "Room Assignment")
+            
+            // Current Room
+            if let room = currentRoom {
+                HStack {
+                    Image(systemName: "door.left.hand.closed.fill")
+                        .foregroundColor(.blue)
+                        .font(.title2)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Current Room")
+                            .font(.headline)
+                        Text("Room \(room.number)")
+                            .font(.body)
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding()
+                .background(Color.blue.opacity(0.1))
+                .cornerRadius(12)
+            } else {
+                HStack {
+                    Image(systemName: "door.left.hand.closed")
+                        .foregroundColor(.gray)
+                        .font(.title2)
+                    Text("No room assigned")
+                        .font(.body)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                }
+                .padding()
+                .background(Color(.systemGray6))
+                .cornerRadius(12)
+            }
+            
+            // Assign/Change Room Button
+            Button(action: {
+                showRoomPicker = true
+            }) {
+                HStack {
+                    if isAssigningRoom {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                    }
+                    Image(systemName: currentRoom == nil ? "plus.circle.fill" : "arrow.triangle.2.circlepath")
+                    Text(currentRoom == nil ? "Assign Room" : "Change Room")
+                        .fontWeight(.semibold)
+                }
+                .frame(maxWidth: .infinity)
+                .padding()
+                .background(Color.blue)
+                .foregroundColor(.white)
+                .cornerRadius(12)
+            }
+            .disabled(isAssigningRoom || isLoadingRooms)
+            
+            if authManager.userRole == .pgAdmin || authManager.userRole == .manager {
+                Button(action: {
+                    showSwapSheet = true
+                }) {
+                    HStack {
+                        if isSwappingRoom {
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                        }
+                        Image(systemName: "arrow.left.arrow.right.circle.fill")
+                        Text("Swap Room")
+                            .fontWeight(.semibold)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(Color.purple)
+                    .foregroundColor(.white)
+                    .cornerRadius(12)
+                }
+                .disabled(isSwappingRoom || isLoadingRooms || currentRoom == nil)
+                .sheet(isPresented: $showSwapSheet) {
+                    swapSheet
+                }
+            }
+        }
+        .padding()
+        .background(Color(.systemGray6))
+        .cornerRadius(12)
+        .padding(.horizontal)
+    }
+    
+    private var roomPickerSheet: some View {
+        NavigationView {
+            VStack {
+                if isLoadingRooms {
+                    ProgressView("Loading rooms...")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if availableRooms.isEmpty {
+                    VStack(spacing: 16) {
+                        Image(systemName: "door.left.hand.closed")
+                            .font(.system(size: 50))
+                            .foregroundColor(.secondary)
+                        Text("No Available Rooms")
+                            .font(.headline)
+                        Text("All rooms are currently occupied")
+                            .font(.body)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding()
+                } else {
+                    List {
+                        // Unassign option (if room is currently assigned)
+                        if currentRoom != nil {
+                            Button(action: {
+                                selectedRoomId = "unassign"
+                                assignRoom(roomId: nil)
+                            }) {
+                                HStack {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundColor(.red)
+                                    Text("Unassign Room")
+                                        .font(.headline)
+                                        .foregroundColor(.red)
+                                    Spacer()
+                                    if selectedRoomId == "unassign" && isAssigningRoom {
+                                        ProgressView()
+                                    }
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            
+                            Divider()
+                        }
+                        
+                        // Available rooms
+                        ForEach(availableRooms) { room in
+                            Button(action: {
+                                selectedRoomId = room.id
+                                assignRoom(roomId: room.id)
+                            }) {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text("Room \(room.number)")
+                                            .font(.headline)
+                                        Text("\(room.availableBeds) bed\(room.availableBeds == 1 ? "" : "s") available")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    Spacer()
+                                    if selectedRoomId == room.id && isAssigningRoom {
+                                        ProgressView()
+                                    } else if currentRoom?.id == room.id {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundColor(.blue)
+                                    }
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Select Room")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Cancel") {
+                        showRoomPicker = false
+                        selectedRoomId = nil
+                    }
+                }
+            }
+        }
+    }
+    
+    private var swapSheet: some View {
+        NavigationView {
+            VStack {
+                if isSwappingRoom {
+                    ProgressView("Swapping rooms...")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if swapCandidates.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "person.2.slash")
+                            .font(.system(size: 50))
+                            .foregroundColor(.secondary)
+                        Text("No available students")
+                            .font(.headline)
+                        Text("Only students with assigned rooms can be swapped.")
+                            .font(.body)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List {
+                        ForEach(swapCandidates) { candidate in
+                            Button {
+                                selectedSwapCandidate = candidate
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(candidate.name)
+                                            .font(.headline)
+                                        if let room = candidate.roomNumber {
+                                            Text("Room \(room)")
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                        }
+                                    }
+                                    Spacer()
+                                    if selectedSwapCandidate?.id == candidate.id {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundColor(.purple)
+                                    }
+                                }
+                                .padding(.vertical, 4)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Swap Room With")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Cancel") {
+                        showSwapSheet = false
+                        selectedSwapCandidate = nil
+                    }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Swap") {
+                        Task {
+                            await performSwap()
+                        }
+                    }
+                    .disabled(selectedSwapCandidate == nil || isSwappingRoom)
+                }
+            }
+            .task {
+                await loadSwapCandidates()
+            }
         }
     }
     
@@ -263,6 +563,85 @@ struct MemberDetailView: View {
         }
     }
     
+    private func loadSwapCandidates() async {
+        guard let pgId = authManager.currentPgId,
+              let currentStudentId = member.studentId else {
+            await MainActor.run {
+                swapCandidates = []
+            }
+            return
+        }
+        
+        do {
+            let response: StudentsListResponse = try await APIManager.shared.makeRequest(
+                endpoint: "/pg/\(pgId)/students?limit=500",
+                method: .GET,
+                responseType: StudentsListResponse.self
+            )
+            
+            let candidates = response.data.data
+                .filter {
+                    $0.id != currentStudentId &&
+                    $0.status == "ACTIVE" &&
+                    $0.room?.id != nil
+                }
+                .map {
+                    StudentSwapCandidate(
+                        id: $0.id,
+                        name: $0.name,
+                        roomId: $0.room?.id,
+                        roomNumber: $0.room?.number
+                    )
+                }
+            
+            await MainActor.run {
+                swapCandidates = candidates
+            }
+        } catch {
+            await MainActor.run {
+                swapCandidates = []
+            }
+            print("❌ [Room Swap] Failed to load candidates: \(error)")
+        }
+    }
+    
+    private func performSwap() async {
+        guard let pgId = authManager.currentPgId,
+              let studentId = member.studentId,
+              currentRoom != nil,
+              let candidate = selectedSwapCandidate else {
+            return
+        }
+        
+        await MainActor.run {
+            isSwappingRoom = true
+        }
+        
+        do {
+            let swapResult = try await APIManager.shared.swapStudentRooms(
+                pgId: pgId,
+                studentAId: studentId,
+                studentBId: candidate.id
+            )
+            
+            await loadStudentRoom()
+            await loadAvailableRooms()
+            await MainActor.run {
+                self.currentRoom = swapResult.studentA.room
+                showSwapSheet = false
+                selectedSwapCandidate = nil
+            }
+        } catch {
+            await MainActor.run {
+                errorMessage = "Failed to swap rooms: \(error.localizedDescription)"
+                showError = true
+            }
+        }
+
+        await MainActor.run {
+            isSwappingRoom = false
+        }
+    }
     private func loadAndShowInvite() {
         isLoading = true
         
@@ -284,6 +663,13 @@ struct MemberDetailView: View {
                         )
                     )
                     showInviteShare = true
+                } else {
+                    // No existing invite found; generate one on the fly
+                    await MainActor.run {
+                        isLoading = false
+                        isGeneratingInvite = true
+                    }
+                    generateInvite()
                 }
             } catch {
                 errorMessage = "Failed to load invite: \(error.localizedDescription)"
@@ -308,6 +694,119 @@ struct MemberDetailView: View {
         displayFormatter.timeStyle = .none
         
         return displayFormatter.string(from: date)
+    }
+    
+    // MARK: - Room Assignment Methods
+    
+    private func loadStudentRoom() async {
+        guard let pgId = authManager.currentPgId,
+              let studentId = member.studentId else {
+            // Not a student or studentId not available
+            return
+        }
+        
+        do {
+            // Fetch student details to get room info
+            let response: GetStudentResponse = try await APIManager.shared.makeRequest(
+                endpoint: "/pg/\(pgId)/students/\(studentId)",
+                method: .GET,
+                responseType: GetStudentResponse.self
+            )
+            
+            if let studentData = response.data, let room = studentData.room {
+                await MainActor.run {
+                    currentRoom = room
+                }
+            } else {
+                await MainActor.run {
+                    currentRoom = nil
+                }
+            }
+        } catch {
+            print("⚠️ [Room Assignment] Could not load student room: \(error)")
+            // Not critical, continue without room info
+        }
+    }
+    
+    private func loadAvailableRooms() async {
+        guard let pgId = authManager.currentPgId else { return }
+        
+        await MainActor.run {
+            isLoadingRooms = true
+        }
+        
+        do {
+            let response = try await APIManager.shared.getAvailableRooms(pgId: pgId)
+            
+            await MainActor.run {
+                availableRooms = response.data
+                isLoadingRooms = false
+            }
+        } catch {
+            await MainActor.run {
+                errorMessage = "Failed to load available rooms: \(error.localizedDescription)"
+                showError = true
+                isLoadingRooms = false
+            }
+            print("❌ Load available rooms error: \(error)")
+        }
+    }
+    
+    private func assignRoom(roomId: String?) {
+        guard let pgId = authManager.currentPgId,
+              let studentId = member.studentId else {
+            print("❌ [Room Assignment] Missing pgId or studentId")
+            return
+        }
+        
+        print("🏠 [Room Assignment] Assigning room \(roomId ?? "nil") to student \(studentId)")
+        
+        isAssigningRoom = true
+        
+        Task {
+            do {
+                let response = try await APIManager.shared.updateStudentRoom(
+                    studentId: studentId,
+                    pgId: pgId,
+                    roomId: roomId
+                )
+                
+                print("✅ [Room Assignment] Response: success=\(response.success)")
+                
+                if response.success {
+                    // Update current room
+                    if let roomData = response.data?.room {
+                        print("✅ [Room Assignment] Room assigned: \(roomData.number)")
+                        await MainActor.run {
+                            currentRoom = roomData
+                            showRoomPicker = false
+                            selectedRoomId = nil
+                        }
+                    } else {
+                        // Room was unassigned
+                        print("✅ [Room Assignment] Room unassigned")
+                        await MainActor.run {
+                            currentRoom = nil
+                            showRoomPicker = false
+                            selectedRoomId = nil
+                        }
+                    }
+                    
+                    // Reload available rooms to reflect changes
+                    await loadAvailableRooms()
+                }
+            } catch {
+                await MainActor.run {
+                    errorMessage = "Failed to assign room: \(error.localizedDescription)"
+                    showError = true
+                }
+                print("❌ [Room Assignment] Error: \(error)")
+            }
+            
+            await MainActor.run {
+                isAssigningRoom = false
+            }
+        }
     }
     
     private func roleColor(for role: String) -> Color {
@@ -396,5 +895,12 @@ struct MemberStatusBadge: View {
         default: return .gray
         }
     }
+}
+
+struct StudentSwapCandidate: Identifiable {
+    let id: String
+    let name: String
+    let roomId: String?
+    let roomNumber: String?
 }
 

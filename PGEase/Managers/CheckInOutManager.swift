@@ -14,6 +14,7 @@ class CheckInOutManager: NSObject, ObservableObject {
     // User type and ID for multi-role support
     @Published var userType: String = "STUDENT" // "STUDENT" or "STAFF"
     @Published var userId: String?
+    @Published var profileId: String?
     
     private let apiManager = APIManager.shared
     private let locationManager = CLLocationManager()
@@ -25,6 +26,21 @@ class CheckInOutManager: NSObject, ObservableObject {
         super.init()
         setupLocationManager()
         loadCheckInStatus()
+
+        // Load identifiers from stored state
+        if let storedUserId = UserDefaults.standard.string(forKey: "userId") {
+            self.userId = storedUserId
+        }
+
+        if let storedProfileId = UserDefaults.standard.string(forKey: "profileId"), !storedProfileId.isEmpty {
+            self.profileId = storedProfileId
+        } 
+        
+        // else if let storedStudentId = UserDefaults.standard.string(forKey: "studentId"), !storedStudentId.isEmpty {
+        //     self.profileId = storedStudentId
+        // } else if let storedStaffId = UserDefaults.standard.string(forKey: "staffId"), !storedStaffId.isEmpty {
+        //     self.profileId = storedStaffId
+        // }
     }
     
     // MARK: - Location Management
@@ -71,7 +87,7 @@ class CheckInOutManager: NSObject, ObservableObject {
         }
         
         do {
-            guard let userId = getCurrentUserId() else {
+            guard let accountUserId = getAccountUserId() else {
                 await MainActor.run {
                     self.isLoading = false
                     self.errorMessage = "User ID not found"
@@ -79,11 +95,17 @@ class CheckInOutManager: NSObject, ObservableObject {
                 return
             }
             
+            let profileId = getCurrentProfileId() ?? accountUserId
+
             // ✅ Authenticate with WebAuthn (Face ID/Touch ID)
-            guard let credentialId = await webAuthnManager.authenticate(userId: userId) else {
+            guard let credentialId = await webAuthnManager.authenticate(userId: accountUserId) else {
                 await MainActor.run {
                     self.isLoading = false
-                    self.errorMessage = "Biometric authentication failed"
+                    if let webAuthnError = webAuthnManager.errorMessage, !webAuthnError.isEmpty {
+                        self.errorMessage = webAuthnError
+                    } else {
+                        self.errorMessage = "Biometric authentication failed. Please ensure passkey setup is complete."
+                    }
                 }
                 return
             }
@@ -98,11 +120,13 @@ class CheckInOutManager: NSObject, ObservableObject {
             
             let response = try await apiManager.checkIn(
                 userType: userType,
-                userId: userId,
+                userId: accountUserId,
+                profileId: profileId,
                 method: method,
                 nfcTagId: nfcTagId,
                 webAuthnCredentialId: credentialId, // ✅ NEW: WebAuthn proof
                 location: locationData,
+                biometricVerified: true,
                 deviceId: deviceId
             )
             
@@ -128,7 +152,7 @@ class CheckInOutManager: NSObject, ObservableObject {
         }
         
         do {
-            guard let userId = getCurrentUserId() else {
+            guard let accountUserId = getAccountUserId() else {
                 await MainActor.run {
                     self.isLoading = false
                     self.errorMessage = "User ID not found"
@@ -136,11 +160,17 @@ class CheckInOutManager: NSObject, ObservableObject {
                 return
             }
             
+            let profileId = getCurrentProfileId() ?? accountUserId
+
             // ✅ Authenticate with WebAuthn (Face ID/Touch ID) - SAME as check-in
-            guard let credentialId = await webAuthnManager.authenticate(userId: userId) else {
+            guard let credentialId = await webAuthnManager.authenticate(userId: accountUserId) else {
                 await MainActor.run {
                     self.isLoading = false
-                    self.errorMessage = "Biometric authentication failed"
+                    if let webAuthnError = webAuthnManager.errorMessage, !webAuthnError.isEmpty {
+                        self.errorMessage = webAuthnError
+                    } else {
+                        self.errorMessage = "Biometric authentication failed. Please ensure passkey setup is complete."
+                    }
                 }
                 return
             }
@@ -155,11 +185,13 @@ class CheckInOutManager: NSObject, ObservableObject {
             
             let response = try await apiManager.checkOut(
                 userType: userType,
-                userId: userId,
+                userId: accountUserId,
+                profileId: profileId,
                 method: method,
                 nfcTagId: nfcTagId,
                 webAuthnCredentialId: credentialId, // ✅ NEW: WebAuthn proof
                 location: locationData,
+                biometricVerified: true,
                 deviceId: deviceId
             )
             
@@ -316,14 +348,38 @@ class CheckInOutManager: NSObject, ObservableObject {
     
     // MARK: - Helper Methods
     
-    private func getCurrentUserId() -> String? {
-        // Return appropriate ID based on userType
-        if userType == "STUDENT" {
-            return UserDefaults.standard.string(forKey: "studentId")
-        } else if userType == "STAFF" {
-            return UserDefaults.standard.string(forKey: "staffId")
+    private func getAccountUserId() -> String? {
+        if let overrideId = userId, !overrideId.isEmpty {
+            return overrideId
         }
-        return userId
+
+        if let universalId = UserDefaults.standard.string(forKey: "userId"), !universalId.isEmpty {
+            return universalId
+        }
+
+        return nil
+    }
+
+    private func getCurrentProfileId() -> String? {
+        if let overrideProfileId = profileId, !overrideProfileId.isEmpty {
+            return overrideProfileId
+        }
+
+        if let storedProfileId = UserDefaults.standard.string(forKey: "profileId"), !storedProfileId.isEmpty {
+            return storedProfileId
+        }
+
+        // if userType == "STUDENT" {
+        //     if let storedStudentId = UserDefaults.standard.string(forKey: "studentId"), !storedStudentId.isEmpty {
+        //         return storedStudentId
+        //     }
+        // } else if userType == "STAFF" {
+        //     if let storedStaffId = UserDefaults.standard.string(forKey: "staffId"), !storedStaffId.isEmpty {
+        //         return storedStaffId
+        //     }
+        // }
+
+        return nil
     }
     
     private func saveCheckInStatus() {

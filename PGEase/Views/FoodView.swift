@@ -48,7 +48,7 @@ struct FoodView: View {
     private func getFoodItems() -> [FoodItem] {
         let allItems = [
             FoodItem(name: "Continental Breakfast", price: 8.99, category: "Breakfast", image: "sunrise"),
-            FoodItem(name: "Pancakes", price: 6.99, category: "Breakfast", image: "pancake"),
+            FoodItem(name: "Pancakes", price: 6.99, category: "Breakfast", image: "fork.knife"),
             FoodItem(name: "Caesar Salad", price: 12.99, category: "Lunch", image: "leaf"),
             FoodItem(name: "Grilled Chicken", price: 15.99, category: "Lunch", image: "bird"),
             FoodItem(name: "Pasta Carbonara", price: 14.99, category: "Dinner", image: "fork"),

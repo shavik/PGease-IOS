@@ -2,6 +2,8 @@ import SwiftUI
 
 struct MainTabView: View {
     @EnvironmentObject var biometricAuthManager: BiometricAuthManager
+    @EnvironmentObject var checkInOutManager: CheckInOutManager
+    @EnvironmentObject var authManager: AuthManager
     
     var body: some View {
         TabView {
@@ -26,20 +28,32 @@ struct MainTabView: View {
                     Text("Issues")
                 }
             
-            // Checkin Tab (Current ContentView)
-            ContentView()
-                .environmentObject(biometricAuthManager)
+            // // Checkin Tab (Current ContentView)
+            // ContentView()
+            //     .environmentObject(biometricAuthManager)
+            AttendanceView()
+                .environmentObject(authManager)
+                .environmentObject(checkInOutManager)
                 .tabItem {
-                    Image(systemName: "qrcode.viewfinder")
-                    Text("Checkin")
+                    Image(systemName: "checkmark.circle")
+                    Text("Attendance")
                 }
-            
-            // NFC Tab
-            NFCView()
-                .tabItem {
-                    Image(systemName: "wave.3.right")
-                    Text("NFC")
-                }
+
+            if authManager.userRole == .student {
+                ProfileView()
+                    .environmentObject(authManager)
+                    .tabItem {
+                        Image(systemName: "person.circle")
+                        Text("Profile")
+                    }
+            } else {
+                // NFC Tab (hidden for students)
+                NFCView()
+                    .tabItem {
+                        Image(systemName: "wave.3.right")
+                        Text("NFC")
+                    }
+            }
         }
         .accentColor(.blue)
     }
@@ -48,4 +62,6 @@ struct MainTabView: View {
 #Preview {
     MainTabView()
         .environmentObject(BiometricAuthManager())
+        .environmentObject(CheckInOutManager())
+        .environmentObject(AuthManager())
 }

@@ -103,7 +103,11 @@ class AuthManager: ObservableObject {
             self.isAuthenticated = true
             self.userRole = UserRole(rawValue: user.role) ?? .student
             
-            // ✅ Load user's PGs for multi-PG support
+            // ✅ Set current PG immediately from saved user (prevents race condition)
+            self.currentPgId = user.pgId
+            self.currentPgName = user.pgName
+            
+            // ✅ Load user's PGs for multi-PG support (this might update currentPgId)
             Task {
                 await loadUserPGs()
             }
@@ -119,7 +123,14 @@ class AuthManager: ObservableObject {
         }
     }
     
-    func login(userId: String, role: String, pgId: String, pgName: String, userName: String) {
+    func login(
+        userId: String,
+        role: String,
+        pgId: String,
+        pgName: String,
+        userName: String,
+        profileId: String? = nil
+    ) {
         // Set authentication state
         self.isAuthenticated = true
         
@@ -137,7 +148,7 @@ class AuthManager: ObservableObject {
             role: role,
             pgId: pgId,
             pgName: pgName,
-            profileId: nil,
+            profileId: profileId,
             roomNumber: nil,
             deviceId: UIDevice.current.identifierForVendor?.uuidString,
             biometricSetup: false,
@@ -157,6 +168,16 @@ class AuthManager: ObservableObject {
         UserDefaults.standard.set(role, forKey: "userType")
         UserDefaults.standard.set(pgId, forKey: "pgId")
         
+        if let profileId = profileId, !profileId.isEmpty {
+            UserDefaults.standard.set(profileId, forKey: "profileId")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "profileId")
+        }
+        
+        // Clear legacy identifiers (kept for backward compatibility cleanup)
+        UserDefaults.standard.removeObject(forKey: "studentId")
+        UserDefaults.standard.removeObject(forKey: "staffId")
+
         // Load PGs if multi-PG user
         if userRole == .pgAdmin || userRole == .vendor {
             Task {
@@ -176,6 +197,7 @@ class AuthManager: ObservableObject {
         UserDefaults.standard.removeObject(forKey: "userId")
         UserDefaults.standard.removeObject(forKey: "pgId")
         UserDefaults.standard.removeObject(forKey: "deviceId")
+        UserDefaults.standard.removeObject(forKey: "profileId")
         UserDefaults.standard.removeObject(forKey: "biometricSetupComplete")
         UserDefaults.standard.removeObject(forKey: "isCheckedIn")
         
@@ -192,15 +214,6 @@ class AuthManager: ObservableObject {
     func detectUserRole() -> UserRole {
         if let userType = UserDefaults.standard.string(forKey: "userType") {
             return UserRole(rawValue: userType) ?? .student
-        }
-        
-        // Fallback: check if studentId or staffId exists
-        if UserDefaults.standard.string(forKey: "studentId") != nil {
-            return .student
-        } else if UserDefaults.standard.string(forKey: "staffId") != nil {
-            // For staff, we need to determine their specific role
-            // This would typically come from the API
-            return .staff
         }
         
         return .student

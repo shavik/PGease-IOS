@@ -21,6 +21,9 @@ struct AddMemberView: View {
     @State private var errorMessage = ""
     @State private var createdUserId: String?
     @State private var showSuccess = false
+    @State private var generatedInvite: GenerateInviteResponse.InviteData?
+    @State private var showInviteShare = false
+    @State private var isGeneratingInvite = false
     
     var body: some View {
         NavigationView {
@@ -170,16 +173,23 @@ struct AddMemberView: View {
             } message: {
                 Text(errorMessage)
             }
-            .alert("Success!", isPresented: $showSuccess) {
-                Button("Generate Invite") {
-                    // Navigate to member detail to generate invite
-                    dismiss()
+            .alert("Member Created!", isPresented: $showSuccess) {
+                Button("Generate Invite Now") {
+                    generateInviteForCreatedMember()
                 }
-                Button("Done", role: .cancel) {
+                Button("Later", role: .cancel) {
                     dismiss()
                 }
             } message: {
-                Text("Member created successfully!")
+                Text("\(name) has been added. Generate an invite to onboard them.")
+            }
+            .sheet(isPresented: $showInviteShare) {
+                if let invite = generatedInvite {
+                    InviteShareView(inviteData: invite)
+                        .onDisappear {
+                            dismiss() // Close AddMemberView after sharing
+                        }
+                }
             }
         }
     }
@@ -234,6 +244,41 @@ struct AddMemberView: View {
             }
             
             isCreating = false
+        }
+    }
+    
+    private func generateInviteForCreatedMember() {
+        guard let userId = createdUserId,
+              let creatorId = authManager.currentUser?.id else {
+            return
+        }
+        
+        isGeneratingInvite = true
+        showSuccess = false // Dismiss the success alert
+        
+        Task {
+            do {
+                let response = try await APIManager.shared.generateInvite(
+                    userId: userId,
+                    createdBy: creatorId
+                )
+                
+                if response.success {
+                    await MainActor.run {
+                        generatedInvite = response.data
+                        isGeneratingInvite = false
+                        showInviteShare = true // Show invite share sheet
+                        print("✅ Invite generated: \(response.data.inviteCode)")
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    isGeneratingInvite = false
+                    errorMessage = "Failed to generate invite: \(error.localizedDescription)"
+                    showError = true
+                    print("❌ Generate invite error: \(error)")
+                }
+            }
         }
     }
 }

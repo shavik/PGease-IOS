@@ -353,9 +353,11 @@ struct InviteOnboardingView: View {
         await MainActor.run { isLoading = true }
         
         do {
-            let response = try await APIManager.shared.linkDevice(
+            // Use universal link-device API that supports all user types
+            let response = try await APIManager.shared.linkDeviceUniversal(
                 inviteCode: inviteCode,
-                deviceId: onboardingManager.deviceId
+                deviceId: onboardingManager.deviceId,
+                userType: inviteType
             )
             
             await MainActor.run {
@@ -378,6 +380,7 @@ struct InviteOnboardingView: View {
                 errorMessage = "Invalid or expired invite code: \(error.localizedDescription)"
                 showError = true
                 isLoading = false
+                // print("❌ Invalid error: \(error.error)")
             }
         }
     }
@@ -405,21 +408,62 @@ struct InviteOnboardingView: View {
                 
                 request.httpBody = try JSONSerialization.data(withJSONObject: body.compactMapValues { $0 })
                 
-                let (data, _) = try await URLSession.shared.data(for: request)
-                let response = try JSONDecoder().decode(InviteSignupResponse.self, from: data)
+                let (data, response) = try await URLSession.shared.data(for: request)
                 
-                if response.success {
+                // Debug: Print raw response
+                if let httpResponse = response as? HTTPURLResponse {
+                    print("📥 [Password Setup] HTTP Status: \(httpResponse.statusCode)")
+                    
+                    // Check for error status codes
+                    if httpResponse.statusCode >= 400 {
+                        if let jsonString = String(data: data, encoding: .utf8) {
+                            print("❌ [Password Setup] Error response: \(jsonString)")
+                            
+                            // Try to parse error message
+                            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                               let errorMsg = json["error"] as? String {
+                                throw NSError(domain: "API", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: errorMsg])
+                            }
+                        }
+                        throw NSError(domain: "API", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: "HTTP Error: \(httpResponse.statusCode)"])
+                    }
+                }
+                if let jsonString = String(data: data, encoding: .utf8) {
+                    print("📥 [Password Setup] Response JSON: \(jsonString)")
+                }
+                
+                let signupResponse = try JSONDecoder().decode(InviteSignupResponse.self, from: data)
+                
+                if signupResponse.success {
                     await MainActor.run {
-                        userId = response.userId
+                        userId = signupResponse.userId
                         
                         // Save credentials
-                        UserDefaults.standard.set(response.userId, forKey: "userId")
+                        UserDefaults.standard.set(signupResponse.userId, forKey: "userId")
                         UserDefaults.standard.set(inviteType.uppercased(), forKey: "userType")
                         
                         // Move to biometric setup
                         currentStep = .setupBiometric
                         isLoading = false
                     }
+                }
+            } catch let decodingError as DecodingError {
+                await MainActor.run {
+                    print("❌ [Password Setup] Decoding error: \(decodingError)")
+                    switch decodingError {
+                    case .keyNotFound(let key, let context):
+                        errorMessage = "Missing key '\(key.stringValue)': \(context.debugDescription)"
+                    case .typeMismatch(let type, let context):
+                        errorMessage = "Type mismatch for \(type): \(context.debugDescription)"
+                    case .valueNotFound(let type, let context):
+                        errorMessage = "Value not found for \(type): \(context.debugDescription)"
+                    case .dataCorrupted(let context):
+                        errorMessage = "Data corrupted: \(context.debugDescription)"
+                    @unknown default:
+                        errorMessage = "Decoding error: \(decodingError.localizedDescription)"
+                    }
+                    showError = true
+                    isLoading = false
                 }
             } catch {
                 await MainActor.run {

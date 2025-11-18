@@ -29,9 +29,22 @@
 		68490F4F2E40ABAB0032F55B /* PGEaseUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PGEaseUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		682DC6392EB5FBBD00C36727 /* Exceptions for "PGEase" folder in "PGEase" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 68490F372E40ABA90032F55B /* PGEase */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		68490F3A2E40ABA90032F55B /* PGEase */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				682DC6392EB5FBBD00C36727 /* Exceptions for "PGEase" folder in "PGEase" target */,
+			);
 			path = PGEase;
 			sourceTree = "<group>";
 		};
@@ -399,6 +412,7 @@
 				DEVELOPMENT_TEAM = 9CL2E5J368;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = PGEase/Info.plist;
 				INFOPLIST_KEY_NFCReaderUsageDescription = "This app needs NFC access to read and write NFC tags for check-in and data management.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Camera need to scan qrcode and capture photo";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "This app uses Face ID to securely authenticate users and protect their data.";
@@ -432,6 +446,7 @@
 				DEVELOPMENT_TEAM = 9CL2E5J368;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = PGEase/Info.plist;
 				INFOPLIST_KEY_NFCReaderUsageDescription = "This app needs NFC access to read and write NFC tags for check-in and data management.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Camera need to scan qrcode and capture photo";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "This app uses Face ID to securely authenticate users and protect their data.";

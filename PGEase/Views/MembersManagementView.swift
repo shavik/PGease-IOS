@@ -62,7 +62,7 @@ struct MembersManagementView: View {
                 } else if filteredMembers.isEmpty {
                     Spacer()
                     VStack(spacing: 16) {
-                        Image(systemName: "person.3.slash")
+                        Image(systemName: "person.3.fill")
                             .font(.system(size: 60))
                             .foregroundColor(.gray)
                         Text("No members found")
@@ -114,13 +114,32 @@ struct MembersManagementView: View {
                 MemberDetailView(member: member)
                     .environmentObject(authManager)
                     .onDisappear {
+                        // Reload members when detail view is dismissed (to reflect room changes)
                         Task {
                             await loadMembers()
                         }
                     }
             }
             .task {
+                print("📋 [Members] Task triggered - loading members...")
+                // Wait a bit for currentPgId to be set if needed
+                if authManager.currentPgId == nil {
+                    print("⏳ [Members] Waiting for currentPgId...")
+                    try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 second
+                }
                 await loadMembers()
+            }
+            .onAppear {
+                print("📋 [Members] View appeared - pgId: \(authManager.currentPgId ?? "nil")")
+                print("📋 [Members] Current members count: \(viewModel.members.count)")
+            }
+            .onChange(of: authManager.currentPgId) { oldValue, newValue in
+                print("📋 [Members] currentPgId changed from \(oldValue ?? "nil") to \(newValue ?? "nil")")
+                if newValue != nil && viewModel.members.isEmpty {
+                    Task {
+                        await loadMembers()
+                    }
+                }
             }
             .alert("Error", isPresented: $viewModel.showError) {
                 Button("OK", role: .cancel) {}
@@ -162,7 +181,12 @@ struct MembersManagementView: View {
     // MARK: - Methods
     
     private func loadMembers() async {
-        guard let pgId = authManager.currentPgId else { return }
+        guard let pgId = authManager.currentPgId else {
+            print("❌ [Members] Cannot load - currentPgId is nil")
+            print("❌ [Members] Auth state - authenticated: \(authManager.isAuthenticated), role: \(authManager.userRole.rawValue)")
+            return
+        }
+        print("📋 [Members] Loading members for PG: \(pgId)")
         await viewModel.loadMembers(pgId: pgId, role: selectedFilter)
     }
 }
@@ -207,6 +231,20 @@ struct MemberRow: View {
                         Text(member.status)
                             .font(.caption)
                             .foregroundColor(statusColor(for: member.status))
+                        
+                        // Show room number for students
+                        if let roomNumber = member.roomNumber {
+                            Text("•")
+                                .foregroundColor(.secondary)
+                            
+                            HStack(spacing: 2) {
+                                Image(systemName: "door.left.hand.closed")
+                                    .font(.caption2)
+                                Text(roomNumber)
+                            }
+                            .font(.caption)
+                            .foregroundColor(.blue)
+                        }
                     }
                     
                     Text(member.email)
@@ -313,15 +351,17 @@ class MembersViewModel: ObservableObject {
     @Published var errorMessage = ""
     
     func loadMembers(pgId: String, role: String? = nil) async {
+        print("📋 [MembersViewModel] Loading members for PG: \(pgId), role: \(role ?? "all")")
         isLoading = true
         
         do {
             let response = try await APIManager.shared.listUsers(pgId: pgId, role: role)
             members = response.users
+            print("✅ [MembersViewModel] Loaded \(members.count) members")
         } catch {
             errorMessage = "Failed to load members: \(error.localizedDescription)"
             showError = true
-            print("❌ Load members error: \(error)")
+            print("❌ [MembersViewModel] Load members error: \(error)")
         }
         
         isLoading = false

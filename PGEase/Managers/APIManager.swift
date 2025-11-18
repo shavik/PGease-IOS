@@ -11,7 +11,7 @@ class APIManager: ObservableObject {
     private init() {}
     
     // MARK: - Generic API Request Method
-    private func makeRequest<T: Codable>(
+    func makeRequest<T: Codable>(
         endpoint: String,
         method: HTTPMethod = .GET,
         body: [String: Any]? = nil,
@@ -38,13 +38,41 @@ class APIManager: ObservableObject {
         }
         
         guard 200...299 ~= httpResponse.statusCode else {
+            // Try to parse error message from response body
+            if let errorResponse = try? JSONDecoder().decode(ErrorResponse.self, from: data) {
+                print("❌ [API Error] \(endpoint): \(errorResponse.error)")
+                if let debug = errorResponse.debug {
+                    print("🔍 [API Debug] \(debug)")
+                }
+                throw APIError.serverError(errorResponse.error)
+            }
             throw APIError.httpError(httpResponse.statusCode)
         }
         
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         
-        return try decoder.decode(T.self, from: data)
+        do {
+        do {
+            return try decoder.decode(T.self, from: data)
+        } catch {
+            if let decodingError = error as? DecodingError {
+                print("❌ [Decoding Error]", decodingError)
+            }
+            if let jsonString = String(data: data, encoding: .utf8) {
+                print("📄 [Raw Response]", jsonString)
+            }
+            throw error
+        }
+        } catch {
+            if let decodingError = error as? DecodingError {
+                print("❌ [Decoding Error] \(decodingError)")
+            }
+            if let jsonString = String(data: data, encoding: .utf8) {
+                print("📄 [Raw Response] \(jsonString)")
+            }
+            throw error
+        }
     }
     
     // MARK: - Onboarding APIs
@@ -58,6 +86,22 @@ class APIManager: ObservableObject {
         
         return try await makeRequest(
             endpoint: "/onboarding/link-device",
+            method: .POST,
+            body: body,
+            responseType: LinkDeviceResponse.self
+        )
+    }
+    
+    // Universal device linking for all user types
+    func linkDeviceUniversal(inviteCode: String, deviceId: String, userType: String) async throws -> LinkDeviceResponse {
+        let body = [
+            "inviteCode": inviteCode,
+            "deviceId": deviceId,
+            "userType": userType
+        ]
+        
+        return try await makeRequest(
+            endpoint: "/onboarding/link-device-universal",
             method: .POST,
             body: body,
             responseType: LinkDeviceResponse.self
@@ -142,6 +186,7 @@ class APIManager: ObservableObject {
     func checkIn(
         userType: String,
         userId: String,
+        profileId: String?,
         method: CheckInMethod,
         nfcTagId: String? = nil,
         webAuthnCredentialId: String? = nil, // ✅ NEW: WebAuthn proof
@@ -156,11 +201,8 @@ class APIManager: ObservableObject {
             "biometricVerified": biometricVerified
         ]
         
-        // Add userId based on userType (for backward compatibility)
-        if userType == "STUDENT" {
-            body["studentId"] = userId
-        } else if userType == "STAFF" {
-            body["staffId"] = userId
+        if let profileId = profileId, !profileId.isEmpty {
+            body["profileId"] = profileId
         }
         
         if let nfcTagId = nfcTagId {
@@ -191,6 +233,7 @@ class APIManager: ObservableObject {
     func checkOut(
         userType: String,
         userId: String,
+        profileId: String?,
         method: CheckInMethod,
         nfcTagId: String? = nil,
         webAuthnCredentialId: String? = nil, // ✅ NEW: WebAuthn proof
@@ -205,11 +248,8 @@ class APIManager: ObservableObject {
             "biometricVerified": biometricVerified
         ]
         
-        // Add userId based on userType (for backward compatibility)
-        if userType == "STUDENT" {
-            body["studentId"] = userId
-        } else if userType == "STAFF" {
-            body["staffId"] = userId
+        if let profileId = profileId, !profileId.isEmpty {
+            body["profileId"] = profileId
         }
         
         if let nfcTagId = nfcTagId {
@@ -235,6 +275,93 @@ class APIManager: ObservableObject {
             body: body,
             responseType: CheckInOutResponse.self
         )
+    }
+
+    // MARK: - PG Details
+
+    func getPGDetails(pgId: String) async throws -> PGDetailResponse {
+        return try await makeRequest(
+            endpoint: "/pg/\(pgId)/details",
+            method: .GET,
+            responseType: PGDetailResponse.self
+        )
+    }
+
+    func updatePGDetails(
+        pgId: String,
+        userId: String,
+        request: UpdatePGDetailsRequest
+    ) async throws -> UpdatePGDetailsResponse {
+        var body: [String: Any] = [
+            "userId": userId
+        ]
+
+        if let name = request.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+            body["name"] = name
+        }
+
+        if let address = request.address {
+            body["address"] = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        if let phone = request.phone {
+            body["phone"] = phone.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        if let city = request.city {
+            body["city"] = city.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        if let state = request.state {
+            body["state"] = state.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        if let pincode = request.pincode {
+            body["pincode"] = pincode.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        if let capacity = request.approximateCapacity {
+            body["approximateCapacity"] = capacity
+        }
+
+        if let pgType = request.pgType {
+            body["pgType"] = pgType
+        }
+
+        if let curfewHour = request.curfewHour {
+            body["curfewHour"] = curfewHour
+        }
+
+        if let curfewMinute = request.curfewMinute {
+            body["curfewMinute"] = curfewMinute
+        }
+
+        return try await makeRequest(
+            endpoint: "/pg/\(pgId)/details",
+            method: .PUT,
+            body: body,
+            responseType: UpdatePGDetailsResponse.self
+        )
+    }
+
+    func swapStudentRooms(
+        pgId: String,
+        studentAId: String,
+        studentBId: String
+    ) async throws -> RoomSwapResult {
+        let body: [String: Any] = [
+            "studentAId": studentAId,
+            "studentBId": studentBId
+        ]
+
+        let response: RoomSwapResponse = try await makeRequest(
+            endpoint: "/pg/\(pgId)/rooms/swap",
+            method: .POST,
+            body: body,
+            responseType: RoomSwapResponse.self
+        )
+
+        return response.swapResult
     }
     
     // MARK: - Staff Onboarding APIs
@@ -422,6 +549,117 @@ class APIManager: ObservableObject {
             endpoint: endpoint,
             method: .GET,
             responseType: UsersListResponse.self
+        )
+    }
+    
+    // MARK: - Room Management APIs
+    
+    func getAvailableRooms(pgId: String) async throws -> AvailableRoomsResponse {
+        return try await makeRequest(
+            endpoint: "/pg/\(pgId)/rooms/available",
+            method: .GET,
+            responseType: AvailableRoomsResponse.self
+        )
+    }
+    
+    func getRooms(pgId: String) async throws -> RoomsListResponse {
+        return try await makeRequest(
+            endpoint: "/pg/\(pgId)/rooms",
+            method: .GET,
+            responseType: RoomsListResponse.self
+        )
+    }
+    
+    func createRoom(
+        pgId: String,
+        number: String,
+        type: String,
+        bedCount: Int,
+        details: String? = nil,
+        photos: [String]? = nil
+    ) async throws -> RoomData {
+        var body: [String: Any] = [
+            "number": number,
+            "type": type,
+            "bedCount": bedCount
+        ]
+        
+        if let details = details, !details.isEmpty {
+            body["details"] = details
+        }
+        
+        if let photos = photos, !photos.isEmpty {
+            body["photos"] = photos
+        }
+        
+        let response: CreateRoomResponse = try await makeRequest(
+            endpoint: "/pg/\(pgId)/rooms",
+            method: .POST,
+            body: body,
+            responseType: CreateRoomResponse.self
+        )
+        
+        return response.data
+    }
+    
+    func getRoomDetail(pgId: String, roomId: String) async throws -> RoomDetailData {
+        let response: RoomDetailResponse = try await makeRequest(
+            endpoint: "/pg/\(pgId)/rooms/\(roomId)",
+            method: .GET,
+            responseType: RoomDetailResponse.self
+        )
+        return response.data
+    }
+    
+    func updateRoom(
+        pgId: String,
+        roomId: String,
+        number: String,
+        type: String,
+        bedCount: Int,
+        details: String? = nil,
+        photos: [String]? = nil,
+        order: Int? = nil
+    ) async throws -> RoomData {
+        var body: [String: Any] = [
+            "number": number,
+            "type": type,
+            "bedCount": bedCount
+        ]
+        
+        if let details = details {
+            body["details"] = details
+        }
+        
+        if let photos = photos {
+            body["photos"] = photos
+        }
+        
+        if let order = order {
+            body["order"] = order
+        }
+        
+        let response: CreateRoomResponse = try await makeRequest(
+            endpoint: "/pg/\(pgId)/rooms/\(roomId)",
+            method: .PUT,
+            body: body,
+            responseType: CreateRoomResponse.self
+        )
+        
+        return response.data
+    }
+    
+    func updateStudentRoom(studentId: String, pgId: String, roomId: String?) async throws -> UpdateStudentRoomResponse {
+        let body: [String: Any] = [
+            "roomId": roomId as Any,
+            "pgId": pgId
+        ]
+        
+        return try await makeRequest(
+            endpoint: "/pg/\(pgId)/students/\(studentId)",
+            method: .PUT,
+            body: body,
+            responseType: UpdateStudentRoomResponse.self
         )
     }
     
@@ -634,6 +872,7 @@ enum APIError: Error, LocalizedError {
     case invalidURL
     case invalidResponse
     case httpError(Int)
+    case serverError(String)
     case decodingError
     case networkError
     
@@ -641,6 +880,8 @@ enum APIError: Error, LocalizedError {
         switch self {
         case .invalidURL:
             return "Invalid URL"
+        case .serverError(let message):
+            return message
         case .invalidResponse:
             return "Invalid response"
         case .httpError(let code):
@@ -654,6 +895,13 @@ enum APIError: Error, LocalizedError {
 }
 
 // MARK: - Data Models
+
+// Error response from API
+struct ErrorResponse: Codable {
+    let error: String
+    let debug: [String: String]?
+    let hint: String?
+}
 
 struct LinkDeviceResponse: Codable {
     let success: Bool
@@ -680,7 +928,7 @@ struct StudentInfo: Codable {
 struct RoomInfo: Codable {
     let id: String
     let number: String
-    let type: String
+    let type: String?
 }
 
 struct PGInfo: Codable {
@@ -727,11 +975,121 @@ struct CheckInOutResponse: Codable {
 }
 
 struct CheckInOutData: Codable {
-    let studentId: String
-    let type: String
+    let user: CheckInOutUser
+    let checkIn: CheckInOutLog?
+    let checkOut: CheckInOutLog?
+}
+
+struct CheckInOutUser: Codable {
+    let id: String
+    let name: String
+    let email: String?
+    let type: String?
+    let room: RoomInfo?
+    let pg: CheckInOutPG
+}
+
+struct CheckInOutPG: Codable {
+    let id: String
+    let name: String
+}
+
+struct CheckInOutLog: Codable {
+    let id: String
     let method: String
     let timestamp: String
-    let location: LocationInfo?
+    let nfcTagId: String?
+    let biometricVerified: Bool?
+    let location: CheckInOutLocation?
+    let deviceId: String?
+}
+
+struct CheckInOutLocation: Codable {
+    let latitude: Double?
+    let longitude: Double?
+    let distanceFromPG: Double?
+}
+
+// MARK: - PG Details
+
+struct PGDetail: Codable {
+    let id: String
+    let name: String
+    let address: String?
+    let phone: String?
+    let city: String?
+    let state: String?
+    let pincode: String?
+    let approximateCapacity: Int?
+    let pgType: String?
+    let curfewHour: Int?
+    let curfewMinute: Int?
+    let status: String
+}
+
+struct PGDetailResponse: Codable {
+    let success: Bool
+    let data: PGDetail
+}
+
+struct UpdatePGDetailsResponse: Codable {
+    let success: Bool
+    let data: PGDetail
+    let message: String?
+}
+
+struct UpdatePGDetailsRequest {
+    var name: String?
+    var address: String?
+    var phone: String?
+    var city: String?
+    var state: String?
+    var pincode: String?
+    var approximateCapacity: Int?
+    var pgType: String?
+    var curfewHour: Int?
+    var curfewMinute: Int?
+}
+
+struct StudentsListResponse: Codable {
+    let success: Bool
+    let data: StudentsListData
+}
+
+struct StudentsListData: Codable {
+    let data: [StudentListStudent]
+    let total: Int
+    let page: Int
+    let limit: Int
+    let totalPages: Int
+}
+
+struct StudentListStudent: Codable, Identifiable {
+    let id: String
+    let name: String
+    let status: String
+    let room: StudentListRoom?
+
+    struct StudentListRoom: Codable {
+        let id: String?
+        let number: String?
+    }
+}
+
+struct RoomSwapResponse: Codable {
+    let success: Bool
+    let message: String?
+    let swapResult: RoomSwapResult
+}
+
+struct RoomSwapResult: Codable {
+    let studentA: SwapStudentInfo
+    let studentB: SwapStudentInfo
+}
+
+struct SwapStudentInfo: Codable {
+    let id: String
+    let room: BasicRoomInfo?
 }
 
 // MARK: - Biometric Verification Response Models
@@ -1087,6 +1445,9 @@ struct UserListItem: Codable, Identifiable {
     let name: String
     let email: String
     let phone: String?
+    let studentId: String? // Only for students
+    let roomId: String? // Only for students
+    let roomNumber: String? // Only for students
     let role: String
     let status: String
     let accessStatus: String?
@@ -1101,5 +1462,117 @@ struct InviteStatus: Codable {
     let isUsed: Bool
     let isExpired: Bool
     let expiresAt: String?
+}
+
+// MARK: - Room Models
+
+struct AvailableRoom: Codable, Identifiable {
+    let id: String
+    let number: String
+    let availableBeds: Int
+}
+
+struct AvailableRoomsResponse: Codable {
+    let success: Bool
+    let data: [AvailableRoom]
+}
+
+struct UpdateStudentRoomRequest: Codable {
+    let roomId: String?
+    let pgId: String
+}
+
+struct UpdateStudentRoomResponse: Codable {
+    let success: Bool
+    let message: String
+    let data: StudentDetail?
+}
+
+struct StudentDetail: Codable {
+    let id: String
+    let roomId: String?
+    let room: BasicRoomInfo?
+}
+
+struct GetStudentResponse: Codable {
+    let success: Bool
+    let data: StudentDetailWithRoom?
+}
+
+struct StudentDetailWithRoom: Codable {
+    let id: String
+    let roomId: String?
+    let room: BasicRoomInfo?
+}
+
+struct BasicRoomInfo: Codable {
+    let id: String
+    let number: String
+}
+
+struct RoomsListResponse: Codable {
+    let success: Bool
+    let data: [RoomListItem]
+}
+
+struct RoomListItem: Codable, Identifiable {
+    let id: String
+    let number: String
+    let type: String
+    let bedCount: Int
+    let occupiedBeds: Int
+    let availableBeds: Int
+}
+
+struct RoomData: Codable, Identifiable {
+    let id: String
+    let pgId: String
+    let number: String
+    let type: String
+    let bedCount: Int
+    let details: String?
+    let photos: [String]?
+    let order: Int?
+}
+
+struct CreateRoomResponse: Codable {
+    let success: Bool
+    let data: RoomData
+}
+
+struct RoomDetailResponse: Codable {
+    let success: Bool
+    let data: RoomDetailData
+}
+
+struct RoomDetailData: Codable {
+    let id: String
+    let pgId: String
+    let number: String
+    let type: String
+    let bedCount: Int
+    let details: String?
+    let photos: [String]?
+    let order: Int?
+    let occupiedBeds: Int?
+    let availableBeds: Int?
+    let students: [RoomDetailStudent]
+}
+
+struct RoomDetailStudent: Codable, Identifiable {
+    let id: String
+    let name: String
+    let user: RoomDetailStudentUser?
+    
+    var displayName: String {
+        user?.name ?? name
+    }
+}
+
+struct RoomDetailStudentUser: Codable {
+    let id: String
+    let name: String
+    let email: String?
+    let phone: String?
 }
 

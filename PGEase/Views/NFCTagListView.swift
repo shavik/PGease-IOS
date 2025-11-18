@@ -411,7 +411,7 @@ struct NFCTagDetailView: View {
                     DetailRow(title: "Status", value: tag.status)
                     if let room = tag.room {
                         DetailRow(title: "Room", value: room.number)
-                        DetailRow(title: "Room Type", value: room.type)
+                        DetailRow(title: "Room Type", value: room.type ?? "No Type")
                     }
                     DetailRow(title: "Password Set", value: tag.passwordSet ? "Yes" : "No")
                 }

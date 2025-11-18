@@ -16,12 +16,28 @@ struct NFCTagWriteView: View {
     @State private var showAlert = false
     @State private var alertMessage = ""
     
+    private let presetRoomId: String?
+    private let presetRoomNumber: String?
+    
     enum WriteStep {
         case selectRoom
         case generating
         case readyToWrite
         case writing
         case success
+    }
+    
+    init(roomId: String? = nil, roomNumber: String? = nil) {
+        self._selectedRoomId = State(initialValue: roomId ?? "")
+        self._selectedPgId = State(initialValue: "")
+        self._roomNumber = State(initialValue: roomNumber ?? "")
+        self._pgName = State(initialValue: "")
+        self._generatedTagData = State(initialValue: nil)
+        self._currentStep = State(initialValue: .selectRoom)
+        self._showAlert = State(initialValue: false)
+        self._alertMessage = State(initialValue: "")
+        self.presetRoomId = roomId
+        self.presetRoomNumber = roomNumber
     }
     
     var body: some View {
@@ -124,15 +140,24 @@ struct NFCTagWriteView: View {
                 .multilineTextAlignment(.center)
             
             VStack(spacing: 16) {
-                // Room Number Input
+                // Room Number Input or Display
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Room Number")
                         .font(.subheadline)
                         .fontWeight(.medium)
                     
-                    TextField("e.g., 101", text: $roomNumber)
-                        .textFieldStyle(RoundedBorderTextFieldStyle())
-                        .keyboardType(.numberPad)
+                    if let presetRoomNumber = presetRoomNumber, !presetRoomNumber.isEmpty {
+                        Text(presetRoomNumber)
+                            .padding()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.gray.opacity(0.1))
+                            .cornerRadius(8)
+
+                    } else {
+                        TextField("e.g., 101", text: $roomNumber)
+                            .textFieldStyle(RoundedBorderTextFieldStyle())
+                            .keyboardType(.numberPad)
+                    }
                 }
                 
                 // PG Name (read-only, from current user)
@@ -322,20 +347,72 @@ struct NFCTagWriteView: View {
     
     private func generateTag() {
         // ✅ Safely unwrap nfcManager
-        guard let nfcManager = nfcManager else { return }
+        guard let nfcManager = nfcManager,
+              let pgId = authManager.currentPgId else { return }
         
         currentStep = .generating
         
         Task {
-            // TODO: Fetch roomId from API based on roomNumber
-            let roomId = "placeholder-room-id"
-            
-            // ✅ generateNFCTag now uses authManager.currentPgId internally (no pgId param)
-            if let tagData = await nfcManager.generateNFCTag(roomId: roomId) {
-                generatedTagData = tagData
-                currentStep = .readyToWrite
-            } else {
-                currentStep = .selectRoom
+            do {
+                var resolvedRoomId: String?
+                var resolvedRoomNumber = roomNumber
+                
+                if let presetRoomId = presetRoomId, !presetRoomId.isEmpty {
+                    resolvedRoomId = presetRoomId
+                } else {
+                    // Fetch room ID from room number
+                    print("🔍 [NFC Write] Looking up room: \(roomNumber) in PG: \(pgId)")
+                    
+                    let roomsResponse: RoomsListResponse = try await APIManager.shared.makeRequest(
+                        endpoint: "/pg/\(pgId)/rooms",
+                        method: .GET,
+                        responseType: RoomsListResponse.self
+                    )
+                    
+                    // Find room with matching number (case-insensitive)
+                    guard let room = roomsResponse.data.first(where: { $0.number.caseInsensitiveCompare(roomNumber) == .orderedSame }) else {
+                        await MainActor.run {
+                            alertMessage = "Room \(roomNumber) not found. Please check the room number."
+                            showAlert = true
+                            currentStep = .selectRoom
+                        }
+                        return
+                    }
+                    
+                    print("✅ [NFC Write] Found room: \(room.number), ID: \(room.id)")
+                    resolvedRoomId = room.id
+                    resolvedRoomNumber = room.number
+                }
+                
+                guard let roomIdToUse = resolvedRoomId else {
+                    await MainActor.run {
+                        alertMessage = "Unable to resolve room information."
+                        showAlert = true
+                        currentStep = .selectRoom
+                    }
+                    return
+                }
+                
+                // Generate NFC tag
+                if let tagData = await nfcManager.generateNFCTag(roomId: roomIdToUse) {
+                    await MainActor.run {
+                        self.selectedRoomId = roomIdToUse
+                        self.roomNumber = resolvedRoomNumber
+                        generatedTagData = tagData
+                        currentStep = .readyToWrite
+                    }
+                } else {
+                    await MainActor.run {
+                        currentStep = .selectRoom
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    alertMessage = "Failed to generate tag: \(error.localizedDescription)"
+                    showAlert = true
+                    currentStep = .selectRoom
+                }
+                print("❌ [NFC Write] Error: \(error)")
             }
         }
     }

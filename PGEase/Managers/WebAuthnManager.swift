@@ -22,33 +22,47 @@ class WebAuthnManager: NSObject, ObservableObject {
         do {
             await MainActor.run { isLoading = true }
             
+            print("🔐 [WebAuthn] Starting registration for userId: \(userId)")
+            
             // Step 1: Get registration options from server
+            print("📡 [WebAuthn] Calling /webauthn/registration/options...")
             let registrationOptionsResponse = try await apiManager.getWebAuthnRegistrationOptions(
                 userId: userId,
                 deviceName: deviceName
             )
             let options = registrationOptionsResponse.options
+            print("✅ [WebAuthn] Received options - Challenge: \(options.challenge.prefix(20))...")
+            print("✅ [WebAuthn] RP ID: \(options.rp.id)")
+            print("✅ [WebAuthn] User ID: \(options.user.id.prefix(20))...")
             
             // Step 2: Create credential with Face ID/Touch ID
+            print("📱 [WebAuthn] Creating credential with Face ID/Touch ID...")
             let credential = try await createCredential(options: options)
+            print("✅ [WebAuthn] Credential created successfully")
+            print("✅ [WebAuthn] Credential ID: \(credential.credentialID.base64URLEncodedString().prefix(20))...")
             
             // Step 3: Send credential to server for verification
+            print("📡 [WebAuthn] Calling /webauthn/registration/verify...")
             let verified = try await apiManager.verifyWebAuthnRegistration(
                 userId: userId,
                 credential: credential,
                 deviceName: deviceName
             )
+            print("✅ [WebAuthn] Verification result: \(verified)")
             
             await MainActor.run {
                 self.isLoading = false
                 if verified {
                     self.successMessage = "Passkey registered successfully"
+                    print("🎉 [WebAuthn] Registration complete!")
                 }
             }
             
             return verified
             
         } catch {
+            print("❌ [WebAuthn] Registration failed: \(error)")
+            print("❌ [WebAuthn] Error details: \(error.localizedDescription)")
             await MainActor.run {
                 self.isLoading = false
                 self.errorMessage = error.localizedDescription
@@ -64,20 +78,29 @@ class WebAuthnManager: NSObject, ObservableObject {
     /// Returns credential ID if successful
     func authenticate(userId: String) async -> String? {
         do {
-            await MainActor.run { isLoading = true }
+            await MainActor.run {
+                isLoading = true
+                errorMessage = nil
+                successMessage = nil
+            }
             
             // Step 1: Get authentication options from server
             let authenticationOptionsResponse = try await apiManager.getWebAuthnAuthenticationOptions(userId: userId)
             let options = authenticationOptionsResponse.options
+            print("📡 [WebAuthn] Received authentication options for userId: \(userId)")
+            print("📡 [WebAuthn] Allow credentials: \(options.allowCredentials?.map { $0.id } ?? [])")
             
             // Step 2: Authenticate with Face ID/Touch ID
             let assertion = try await getAssertion(options: options)
+            let credentialId = assertion.credentialID.base64URLEncodedString()
+            print("✅ [WebAuthn] Assertion credential ID: \(credentialId)")
             
             // Step 3: Verify with server
             let result = try await apiManager.verifyWebAuthnAuthentication(
                 userId: userId,
                 assertion: assertion
             )
+            print("📡 [WebAuthn] Server verification credential ID: \(result.credentialId)")
             
             await MainActor.run {
                 self.isLoading = false
@@ -89,7 +112,27 @@ class WebAuthnManager: NSObject, ObservableObject {
         } catch {
             await MainActor.run {
                 self.isLoading = false
-                self.errorMessage = error.localizedDescription
+
+                if let nsError = error as NSError?,
+                   nsError.domain == ASAuthorizationError.errorDomain,
+                   nsError.code == ASAuthorizationError.Code.notInteractive.rawValue {
+                    self.errorMessage = "Biometric prompt was cancelled. Please try again."
+                } else if let authError = error as? ASAuthorizationError {
+                    switch authError.code {
+                    case .canceled:
+                        self.errorMessage = "Authentication was cancelled."
+                    case .failed:
+                        self.errorMessage = "Biometric verification failed."
+                    case .invalidResponse, .notHandled, .unknown:
+                        self.errorMessage = error.localizedDescription
+                    case .notInteractive:
+                        self.errorMessage = "Biometric prompt could not be displayed. Please retry."
+                    @unknown default:
+                        self.errorMessage = error.localizedDescription
+                    }
+                } else {
+                    self.errorMessage = error.localizedDescription
+                }
             }
             return nil
         }
@@ -99,13 +142,23 @@ class WebAuthnManager: NSObject, ObservableObject {
     
     private func createCredential(options: RegistrationOptions) async throws -> ASAuthorizationPlatformPublicKeyCredentialRegistration {
         
-        guard let challengeData = Data(base64URLEncoded: options.challenge),
-              let userIDData = Data(base64URLEncoded: options.user.id) else {
+        print("🔑 [WebAuthn] Decoding challenge and user ID...")
+        guard let challengeData = Data(base64URLEncoded: options.challenge) else {
+            print("❌ [WebAuthn] Failed to decode challenge")
             throw WebAuthnError.invalidChallenge
         }
+        print("✅ [WebAuthn] Challenge decoded: \(challengeData.count) bytes")
         
+        guard let userIDData = Data(base64URLEncoded: options.user.id) else {
+            print("❌ [WebAuthn] Failed to decode user ID")
+            throw WebAuthnError.invalidChallenge
+        }
+        print("✅ [WebAuthn] User ID decoded: \(userIDData.count) bytes")
+        
+        print("🔑 [WebAuthn] Creating credential provider with RP ID: \(options.rp.id)")
         let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier: options.rp.id)
         
+        print("🔑 [WebAuthn] Creating registration request...")
         let request = provider.createCredentialRegistrationRequest(
             challenge: challengeData,
             name: options.user.name,
@@ -113,16 +166,20 @@ class WebAuthnManager: NSObject, ObservableObject {
         )
         
         request.userVerificationPreference = .required
+        print("✅ [WebAuthn] Request created with userVerification: required")
         
         return try await withCheckedThrowingContinuation { continuation in
             self.registrationContinuation = continuation
             
+            print("🎬 [WebAuthn] Creating ASAuthorizationController...")
             let controller = ASAuthorizationController(authorizationRequests: [request])
             controller.delegate = self
             controller.presentationContextProvider = self
             
+            print("🎬 [WebAuthn] Performing authorization request...")
             DispatchQueue.main.async {
                 controller.performRequests()
+                print("✅ [WebAuthn] performRequests() called")
             }
         }
     }
@@ -156,19 +213,29 @@ class WebAuthnManager: NSObject, ObservableObject {
 
 extension WebAuthnManager: ASAuthorizationControllerDelegate {
     func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
+        print("✅ [WebAuthn] Authorization completed successfully")
         
         if let credential = authorization.credential as? ASAuthorizationPlatformPublicKeyCredentialRegistration {
+            print("✅ [WebAuthn] Received registration credential")
+            print("✅ [WebAuthn] Credential ID: \(credential.credentialID.base64URLEncodedString().prefix(20))...")
             registrationContinuation?.resume(returning: credential)
             registrationContinuation = nil
         }
         
         if let assertion = authorization.credential as? ASAuthorizationPlatformPublicKeyCredentialAssertion {
+            print("✅ [WebAuthn] Received assertion credential")
             assertionContinuation?.resume(returning: assertion)
             assertionContinuation = nil
         }
     }
     
     func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
+        print("❌ [WebAuthn] Authorization failed with error")
+        print("❌ [WebAuthn] Error domain: \((error as NSError).domain)")
+        print("❌ [WebAuthn] Error code: \((error as NSError).code)")
+        print("❌ [WebAuthn] Error description: \(error.localizedDescription)")
+        print("❌ [WebAuthn] Error: \(error)")
+        
         registrationContinuation?.resume(throwing: error)
         assertionContinuation?.resume(throwing: error)
         
@@ -181,7 +248,43 @@ extension WebAuthnManager: ASAuthorizationControllerDelegate {
 
 extension WebAuthnManager: ASAuthorizationControllerPresentationContextProviding {
     func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
-        return presentationAnchor ?? ASPresentationAnchor()
+        print("🪟 Getting presentation anchor...")
+        
+        // Method 1: Get key window from active scene
+        let activeScenes = UIApplication.shared.connectedScenes
+            .filter { $0.activationState == .foregroundActive }
+            .compactMap { $0 as? UIWindowScene }
+        
+        if let windowScene = activeScenes.first,
+           let window = windowScene.windows.first(where: { $0.isKeyWindow }) {
+            print("✅ Using key window from active scene")
+            return window
+        }
+        
+        // Method 2: Get any key window from any scene
+        if let windowScene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first,
+           let window = windowScene.windows.first(where: { $0.isKeyWindow }) {
+            print("✅ Using key window from any scene")
+            return window
+        }
+        
+        // Method 3: Fallback to deprecated method (iOS 12 compatibility)
+        if let window = UIApplication.shared.windows.first(where: { $0.isKeyWindow }) {
+            print("✅ Using key window (deprecated method)")
+            return window
+        }
+        
+        // Method 4: Get first window that's visible
+        if let window = UIApplication.shared.windows.first(where: { !$0.isHidden }) {
+            print("⚠️ Using first visible window")
+            return window
+        }
+        
+        // Last resort: return first window
+        print("❌ WARNING: Using fallback window")
+        return UIApplication.shared.windows.first ?? ASPresentationAnchor()
     }
 }
 

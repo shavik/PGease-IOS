@@ -17,6 +17,8 @@ struct LoginView: View {
     @State private var loginError = ""
     @State private var showLoginError = false
     @State private var offerBiometricSetup = false
+    @State private var showManualInviteEntry = false
+    @State private var pendingLoginData: LoginResponse? // Store login data until biometric setup is done
 
     var body: some View {
         NavigationView {
@@ -88,6 +90,21 @@ struct LoginView: View {
                         .padding()
                         .background(Color.blue.opacity(0.1))
                         .cornerRadius(12)
+                        
+                        // "I have an invite code" button
+                        Button(action: { showManualInviteEntry = true }) {
+                            HStack {
+                                Image(systemName: "envelope.badge")
+                                    .foregroundColor(.blue)
+                                Text("I have an invite code")
+                                    .fontWeight(.semibold)
+                                    .foregroundColor(.blue)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.blue.opacity(0.1))
+                            .cornerRadius(12)
+                        }
                     }
                     .padding(.horizontal)
                     .padding(.top, 20)
@@ -110,25 +127,39 @@ struct LoginView: View {
             BiometricSettingsView()
         }
         .sheet(isPresented: $offerBiometricSetup) {
-            BiometricSetupOfferView(
-                userId: authManager.currentUser?.id ?? "",
-                userName: authManager.currentUser?.name ?? "",
-                onSetup: { success in
-                    if success {
-                        // Update user record
-                        if var user = authManager.currentUser {
-                            // Mark biometric as set up
+            if let loginData = pendingLoginData {
+                BiometricSetupOfferView(
+                    userId: loginData.userId,
+                    userName: loginData.userName,
+                    onSetup: { success in
+                        if success {
+                            // Mark biometric as set up for this user
+                            UserDefaults.standard.set(true, forKey: "webauthn_\(loginData.userId)")
                             UserDefaults.standard.set(true, forKey: "biometricSetupComplete")
                             biometricAuthManager.setBiometricEnabled(true)
+                            print("✅ WebAuthn setup marked complete for user: \(loginData.userId)")
                         }
+                        // Complete login after biometric setup (success or failure)
+                        completePendingLogin()
+                        offerBiometricSetup = false
+                    },
+                    onSkip: {
+                        // Mark that user skipped setup for this user
+                        UserDefaults.standard.set(true, forKey: "webauthn_\(loginData.userId)_skipped")
+                        print("⏭️ User skipped biometric setup")
+                        // Complete login after skipping biometric setup
+                        completePendingLogin()
+                        offerBiometricSetup = false
                     }
-                    offerBiometricSetup = false
-                },
-                onSkip: {
-                    offerBiometricSetup = false
-                }
-            )
-            .environmentObject(webAuthnManager)
+                )
+                .environmentObject(webAuthnManager)
+                .interactiveDismissDisabled() // Prevent accidental dismissal
+            }
+        }
+        .sheet(isPresented: $showManualInviteEntry) {
+            ManualInviteEntryView()
+                .environmentObject(OnboardingManager())
+                .environmentObject(authManager)
         }
         .alert("Login Error", isPresented: $showLoginError) {
             Button("OK", role: .cancel) {}
@@ -357,7 +388,8 @@ struct LoginView: View {
                 role: user.role,
                 pgId: user.pgId,
                 pgName: user.pgName,
-                userName: user.name
+                userName: user.name,
+                profileId: user.profileId
             )
             
             isAuthenticating = false
@@ -378,21 +410,38 @@ struct LoginView: View {
                 
                 if response.success {
                     await MainActor.run {
-                        // Save user data
-                        authManager.login(
-                            userId: response.userId,
-                            role: response.role,
-                            pgId: response.pgId,
-                            pgName: response.pgName,
-                            userName: response.userName
-                        )
-                        
                         isLoggingIn = false
                         print("✅ Email/password login successful")
                         
-                        // Offer to set up biometric for future logins (if not already set up)
-                        if biometricAuthManager.isBiometricAvailable && !(authManager.currentUser?.biometricSetup ?? false) {
+                        // Debug: Check biometric status
+                        print("🔍 Biometric Available: \(biometricAuthManager.isBiometricAvailable)")
+                        print("🔍 Biometric Enabled: \(biometricAuthManager.isBiometricEnabled)")
+                        print("🔍 User ID: \(response.userId)")
+                        
+                        // Check if we should offer biometric setup
+                        // Check if this user has WebAuthn credentials set up OR has skipped
+                        let hasWebAuthnSetup = UserDefaults.standard.bool(forKey: "webauthn_\(response.userId)")
+                        let hasSkippedSetup = UserDefaults.standard.bool(forKey: "webauthn_\(response.userId)_skipped")
+                        print("🔍 Has WebAuthn Setup: \(hasWebAuthnSetup)")
+                        print("🔍 Has Skipped Setup: \(hasSkippedSetup)")
+                        
+                        if biometricAuthManager.isBiometricAvailable && !hasWebAuthnSetup && !hasSkippedSetup {
+                            // Store login data for later
+                            pendingLoginData = response
+                            // Show biometric setup offer WITHOUT logging in yet
                             offerBiometricSetup = true
+                            print("📱 Showing biometric setup offer")
+                        } else {
+                            // No biometric setup needed, login immediately
+                            print("⏭️ Skipping biometric setup - logging in immediately")
+                            authManager.login(
+                                userId: response.userId,
+                                role: response.role,
+                                pgId: response.pgId,
+                                pgName: response.pgName,
+                                userName: response.userName,
+                                profileId: response.profileId
+                            )
                         }
                     }
                 } else {
@@ -443,6 +492,25 @@ struct LoginView: View {
         return try JSONDecoder().decode(LoginResponse.self, from: data)
     }
     
+    private func completePendingLogin() {
+        guard let loginData = pendingLoginData else { return }
+        
+        // Now complete the login with stored data
+        authManager.login(
+            userId: loginData.userId,
+            role: loginData.role,
+            pgId: loginData.pgId,
+            pgName: loginData.pgName,
+            userName: loginData.userName,
+            profileId: loginData.profileId
+        )
+        
+        // Clear pending data
+        pendingLoginData = nil
+        
+        print("✅ Login completed after biometric setup flow")
+    }
+    
     private func offerBiometricSetup() async {
         // Optionally prompt user to set up biometric for faster future logins
         // This can be done later in profile settings
@@ -458,6 +526,7 @@ struct LoginResponse: Codable {
     let role: String
     let pgId: String
     let pgName: String
+    let profileId: String?
     let message: String?
 }
 
