@@ -389,7 +389,8 @@ struct LoginView: View {
                 pgId: user.pgId,
                 pgName: user.pgName,
                 userName: user.name,
-                profileId: user.profileId
+                profileId: user.profileId,
+                roomNumber: user.roomNumber
             )
             
             isAuthenticating = false
@@ -440,7 +441,8 @@ struct LoginView: View {
                                 pgId: response.pgId,
                                 pgName: response.pgName,
                                 userName: response.userName,
-                                profileId: response.profileId
+                                profileId: response.profileId,
+                                roomNumber: response.roomNumber
                             )
                         }
                     }
@@ -502,7 +504,8 @@ struct LoginView: View {
             pgId: loginData.pgId,
             pgName: loginData.pgName,
             userName: loginData.userName,
-            profileId: loginData.profileId
+            profileId: loginData.profileId,
+            roomNumber: loginData.roomNumber
         )
         
         // Clear pending data
@@ -528,6 +531,7 @@ struct LoginResponse: Codable {
     let pgName: String
     let profileId: String?
     let message: String?
+    let roomNumber: String?
 }
 
 enum LoginAPIError: Error {

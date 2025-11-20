@@ -9,6 +9,7 @@ import SwiftUI
 
 struct MemberDetailView: View {
     let member: UserListItem
+    @ObservedObject var pgStore: PGStore
     @EnvironmentObject var authManager: AuthManager
     @Environment(\.dismiss) var dismiss
     
@@ -276,7 +277,13 @@ struct MemberDetailView: View {
             .task {
                 if member.role == "STUDENT" {
                     await loadStudentRoom()
-                    await loadAvailableRooms()
+                    // Try to load from store first, fallback to API if store is empty
+                    if let pgId = authManager.currentPgId,
+                       !(pgStore.state.roomsByPg[pgId]?.isEmpty ?? true) {
+                        await updateAvailableRoomsFromStore()
+                    } else {
+                        await loadAvailableRooms()
+                    }
                 }
             }
         }
@@ -618,16 +625,21 @@ struct MemberDetailView: View {
         }
         
         do {
-            let swapResult = try await APIManager.shared.swapStudentRooms(
+            try await pgStore.swapStudentRooms(
                 pgId: pgId,
                 studentAId: studentId,
                 studentBId: candidate.id
             )
             
             await loadStudentRoom()
-            await loadAvailableRooms()
+            await updateAvailableRoomsFromStore()
             await MainActor.run {
-                self.currentRoom = swapResult.studentA.room
+                // Update current room from store (optimistic update already applied)
+                if let updatedStudent = pgStore.state.students[studentId],
+                   let roomId = updatedStudent.roomId,
+                   let room = pgStore.state.rooms[roomId] {
+                    self.currentRoom = BasicRoomInfo(id: room.id, number: room.number)
+                }
                 showSwapSheet = false
                 selectedSwapCandidate = nil
             }
@@ -752,6 +764,25 @@ struct MemberDetailView: View {
         }
     }
     
+    // Update available rooms from store (no API call needed)
+    private func updateAvailableRoomsFromStore() async {
+        guard let pgId = authManager.currentPgId else { return }
+        
+        // Get rooms from store and convert to AvailableRoom format
+        let roomIds = pgStore.state.roomsByPg[pgId] ?? []
+        let rooms = roomIds.compactMap { pgStore.state.rooms[$0] }
+        
+        await MainActor.run {
+            availableRooms = rooms.map { room in
+                AvailableRoom(
+                    id: room.id,
+                    number: room.number,
+                    availableBeds: room.availableBeds
+                )
+            }
+        }
+    }
+    
     private func assignRoom(roomId: String?) {
         guard let pgId = authManager.currentPgId,
               let studentId = member.studentId else {
@@ -765,36 +796,32 @@ struct MemberDetailView: View {
         
         Task {
             do {
-                let response = try await APIManager.shared.updateStudentRoom(
-                    studentId: studentId,
+                try await pgStore.updateStudentRoom(
                     pgId: pgId,
+                    studentId: studentId,
                     roomId: roomId
                 )
                 
-                print("✅ [Room Assignment] Response: success=\(response.success)")
+                print("✅ [Room Assignment] Room updated successfully")
                 
-                if response.success {
-                    // Update current room
-                    if let roomData = response.data?.room {
-                        print("✅ [Room Assignment] Room assigned: \(roomData.number)")
-                        await MainActor.run {
-                            currentRoom = roomData
-                            showRoomPicker = false
-                            selectedRoomId = nil
-                        }
-                    } else {
-                        // Room was unassigned
-                        print("✅ [Room Assignment] Room unassigned")
-                        await MainActor.run {
-                            currentRoom = nil
-                            showRoomPicker = false
-                            selectedRoomId = nil
-                        }
+                // Update current room from store (optimistic update already applied)
+                if let roomId = roomId, let room = pgStore.state.rooms[roomId] {
+                    await MainActor.run {
+                        currentRoom = BasicRoomInfo(id: room.id, number: room.number)
+                        showRoomPicker = false
+                        selectedRoomId = nil
                     }
-                    
-                    // Reload available rooms to reflect changes
-                    await loadAvailableRooms()
+                } else {
+                    // Room was unassigned
+                    await MainActor.run {
+                        currentRoom = nil
+                        showRoomPicker = false
+                        selectedRoomId = nil
+                    }
                 }
+                
+                // Update available rooms from store (no need to reload from API)
+                await updateAvailableRoomsFromStore()
             } catch {
                 await MainActor.run {
                     errorMessage = "Failed to assign room: \(error.localizedDescription)"

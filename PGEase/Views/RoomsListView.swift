@@ -2,14 +2,56 @@ import SwiftUI
 
 struct RoomsListView: View {
     @EnvironmentObject var authManager: AuthManager
+    @EnvironmentObject var appStore: AppStore
     
-    @State private var rooms: [RoomListItem] = []
-    @State private var isLoading = false
-    @State private var errorMessage: String?
     @State private var showingAddRoom = false
     @State private var searchText = ""
     
-    private var filteredRooms: [RoomListItem] {
+    var body: some View {
+        // Use a helper view that directly observes pgStore
+        RoomsListContentView(
+            pgStore: appStore.pgStore,
+            showingAddRoom: $showingAddRoom,
+            searchText: $searchText
+        )
+        .environmentObject(authManager)
+    }
+}
+
+// Helper view that directly observes pgStore to ensure SwiftUI tracks changes
+private struct RoomsListContentView: View {
+    @ObservedObject var pgStore: PGStore
+    @EnvironmentObject var authManager: AuthManager
+    
+    @Binding var showingAddRoom: Bool
+    @Binding var searchText: String
+    
+    @EnvironmentObject var appStore: AppStore
+    
+    private var rooms: [Room] {
+        let storeState = pgStore.state
+        guard let pgId = authManager.currentPgId else {
+            return []
+        }
+        let roomIds = storeState.roomsByPg[pgId] ?? []
+        let allRooms = storeState.rooms
+        let result = roomIds.compactMap { allRooms[$0] }
+            .sorted { $0.number.localizedStandardCompare($1.number) == .orderedAscending }
+        
+        print("📱 [RoomsListContentView.rooms] Computed: pgId=\(pgId), roomIds=\(roomIds.count), allRooms=\(allRooms.count), result=\(result.count)")
+        
+        return result
+    }
+    
+    private var isLoading: Bool {
+        pgStore.state.roomsLoading
+    }
+    
+    private var errorMessage: String? {
+        pgStore.state.roomsError
+    }
+    
+    private var filteredRooms: [Room] {
         guard !searchText.isEmpty else { return rooms }
         return rooms.filter { room in
             room.number.localizedCaseInsensitiveContains(searchText) ||
@@ -26,12 +68,16 @@ struct RoomsListView: View {
                 } else if filteredRooms.isEmpty {
                     emptyState
                 } else {
-                        List(filteredRooms) { room in
-                            NavigationLink(destination: RoomDetailView(roomId: room.id, initialRoomNumber: room.number)) {
-                                RoomRowView(room: room)
-                            }
+                    List(filteredRooms) { room in
+                        NavigationLink(destination: RoomDetailView(
+                            pgStore: pgStore,
+                            roomId: room.id,
+                            initialRoomNumber: room.number
+                        )) {
+                            RoomRowView(room: room)
                         }
-                        .listStyle(.insetGrouped)
+                    }
+                    .listStyle(.insetGrouped)
                 }
             }
             .navigationTitle("Rooms")
@@ -46,23 +92,30 @@ struct RoomsListView: View {
             }
             .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .automatic))
             .refreshable {
-                await fetchRooms()
+                await loadRooms()
             }
         }
         .task {
-            await fetchRooms()
+            await loadRooms()
         }
         .sheet(isPresented: $showingAddRoom) {
-            AddRoomSheet {
-                Task { await fetchRooms() }
-            }
+            AddRoomSheet(
+                pgStore: pgStore,
+                onRoomCreated: {
+                    // Room will be added optimistically, no need to reload
+                }
+            )
             .environmentObject(authManager)
         }
         .alert("Error", isPresented: Binding(
             get: { errorMessage != nil },
-            set: { _ in errorMessage = nil }
+            set: { _ in
+                pgStore.clearRoomsError()
+            }
         )) {
-            Button("OK", role: .cancel) { errorMessage = nil }
+            Button("OK", role: .cancel) {
+                pgStore.clearRoomsError()
+            }
         } message: {
             Text(errorMessage ?? "")
         }
@@ -88,38 +141,28 @@ struct RoomsListView: View {
     }
     
     @Sendable
-    private func fetchRooms() async {
+    private func loadRooms() async {
+        print("📱 [RoomsListContentView] loadRooms called")
         guard let pgId = authManager.currentPgId else {
-            await MainActor.run {
-                errorMessage = "Please select a PG first."
-                rooms = []
-                isLoading = false
-            }
+            print("⚠️ [RoomsListContentView] No pgId available, cannot load rooms")
             return
         }
         
-        await MainActor.run {
-            isLoading = rooms.isEmpty
-            errorMessage = nil
-        }
-        
+        print("📱 [RoomsListContentView] Loading rooms for pgId: \(pgId)")
         do {
-            let response = try await APIManager.shared.getRooms(pgId: pgId)
-            await MainActor.run {
-                rooms = response.data.sorted { $0.number.localizedStandardCompare($1.number) == .orderedAscending }
-                isLoading = false
-            }
+            try await pgStore.loadRooms(pgId: pgId)
+            print("✅ [RoomsListContentView] Rooms loaded successfully")
+            print("📊 [RoomsListContentView] Current rooms count in view: \(rooms.count)")
         } catch {
-            await MainActor.run {
-                errorMessage = error.localizedDescription
-                isLoading = false
-            }
+            // Error is already set in store state
+            print("❌ [RoomsListContentView] Failed to load rooms: \(error.localizedDescription)")
+            print("   Error type: \(type(of: error))")
         }
     }
 }
 
 private struct RoomRowView: View {
-    let room: RoomListItem
+    let room: Room
     
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -133,7 +176,7 @@ private struct RoomRowView: View {
             HStack(spacing: 12) {
                 Label("\(room.bedCount)", systemImage: "bed.double")
                 Label("\(room.occupiedBeds)", systemImage: "person.2.fill")
-                Label("\(room.availableBeds)", systemImage: "person.crop.circle.badge.plus")
+                //Label("\(room.availableBeds)", systemImage: "person.crop.circle.badge.plus")
 
             }
             .font(.caption)
@@ -145,6 +188,7 @@ private struct RoomRowView: View {
 
 private struct AddRoomSheet: View {
     @EnvironmentObject var authManager: AuthManager
+    @ObservedObject var pgStore: PGStore
     @Environment(\.dismiss) private var dismiss
     
     @State private var roomNumber: String = ""
@@ -155,6 +199,10 @@ private struct AddRoomSheet: View {
     @State private var errorMessage: String?
     
     let onRoomCreated: () -> Void
+    
+    private var isLoading: Bool {
+        pgStore.state.roomsLoading
+    }
     
     var body: some View {
         NavigationStack {
@@ -223,7 +271,8 @@ private struct AddRoomSheet: View {
         
         Task {
             do {
-                _ = try await APIManager.shared.createRoom(
+                // Use store's createRoom which handles optimistic updates
+                _ = try await pgStore.createRoom(
                     pgId: pgId,
                     number: trimmedNumber,
                     type: selectedType.rawValue,

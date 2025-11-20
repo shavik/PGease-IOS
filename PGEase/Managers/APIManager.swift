@@ -19,8 +19,11 @@ class APIManager: ObservableObject {
     ) async throws -> T {
         
         guard let url = URL(string: "\(baseURL)\(endpoint)") else {
+            print("❌ [APIManager] Invalid URL: \(baseURL)\(endpoint)")
             throw APIError.invalidURL
         }
+        
+        print("🌐 [APIManager] Making \(method.rawValue) request to: \(url.absoluteString)")
         
         var request = URLRequest(url: url)
         request.httpMethod = method.rawValue
@@ -29,15 +32,22 @@ class APIManager: ObservableObject {
         // Add body if provided
         if let body = body {
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            if let bodyString = String(data: request.httpBody!, encoding: .utf8) {
+                print("📤 [APIManager] Request body: \(bodyString.prefix(200))")
+            }
         }
         
         let (data, response) = try await URLSession.shared.data(for: request)
         
         guard let httpResponse = response as? HTTPURLResponse else {
+            print("❌ [APIManager] Invalid HTTP response")
             throw APIError.invalidResponse
         }
         
+        print("📡 [APIManager] HTTP Status: \(httpResponse.statusCode) for \(endpoint)")
+        
         guard 200...299 ~= httpResponse.statusCode else {
+            print("❌ [APIManager] HTTP Error: \(httpResponse.statusCode)")
             // Try to parse error message from response body
             if let errorResponse = try? JSONDecoder().decode(ErrorResponse.self, from: data) {
                 print("❌ [API Error] \(endpoint): \(errorResponse.error)")
@@ -49,27 +59,53 @@ class APIManager: ObservableObject {
             throw APIError.httpError(httpResponse.statusCode)
         }
         
+        // Log raw response for debugging
+        if let jsonString = String(data: data, encoding: .utf8) {
+            print("📄 [APIManager] Raw response for \(endpoint):")
+            print("   \(jsonString.prefix(500))\(jsonString.count > 500 ? "..." : "")")
+        } else {
+            print("⚠️ [APIManager] Response data is not valid UTF-8 string")
+        }
+        
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         
         do {
-        do {
-            return try decoder.decode(T.self, from: data)
+            print("🔄 [APIManager] Attempting to decode response as \(T.self)...")
+            let result = try decoder.decode(T.self, from: data)
+            print("✅ [APIManager] Successfully decoded \(T.self)")
+            return result
         } catch {
+            print("❌ [APIManager] Decoding failed for \(endpoint):")
+            print("   Response type: \(T.self)")
             if let decodingError = error as? DecodingError {
-                print("❌ [Decoding Error]", decodingError)
+                print("   🔍 Decoding error details:")
+                switch decodingError {
+                case .typeMismatch(let type, let context):
+                    print("      Type mismatch: expected \(type)")
+                    print("      Coding path: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
+                    print("      Debug description: \(context.debugDescription)")
+                case .valueNotFound(let type, let context):
+                    print("      Value not found: \(type)")
+                    print("      Coding path: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
+                    print("      Debug description: \(context.debugDescription)")
+                case .keyNotFound(let key, let context):
+                    print("      Key not found: \(key.stringValue)")
+                    print("      Coding path: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
+                    print("      Debug description: \(context.debugDescription)")
+                case .dataCorrupted(let context):
+                    print("      Data corrupted")
+                    print("      Coding path: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
+                    print("      Debug description: \(context.debugDescription)")
+                @unknown default:
+                    print("      Unknown decoding error: \(decodingError)")
+                }
+            } else {
+                print("   Error: \(error.localizedDescription)")
             }
             if let jsonString = String(data: data, encoding: .utf8) {
-                print("📄 [Raw Response]", jsonString)
-            }
-            throw error
-        }
-        } catch {
-            if let decodingError = error as? DecodingError {
-                print("❌ [Decoding Error] \(decodingError)")
-            }
-            if let jsonString = String(data: data, encoding: .utf8) {
-                print("📄 [Raw Response] \(jsonString)")
+                print("📄 [APIManager] Full raw response:")
+                print(jsonString)
             }
             throw error
         }
@@ -563,11 +599,20 @@ class APIManager: ObservableObject {
     }
     
     func getRooms(pgId: String) async throws -> RoomsListResponse {
-        return try await makeRequest(
-            endpoint: "/pg/\(pgId)/rooms",
-            method: .GET,
-            responseType: RoomsListResponse.self
-        )
+        print("🌐 [APIManager] getRooms called for pgId: \(pgId)")
+        print("🌐 [APIManager] Endpoint: /pg/\(pgId)/rooms")
+        do {
+            let response = try await makeRequest(
+                endpoint: "/pg/\(pgId)/rooms",
+                method: .GET,
+                responseType: RoomsListResponse.self
+            )
+            print("✅ [APIManager] getRooms successful: success=\(response.success), data count=\(response.data.count)")
+            return response
+        } catch {
+            print("❌ [APIManager] getRooms failed: \(error.localizedDescription)")
+            throw error
+        }
     }
     
     func createRoom(
@@ -660,6 +705,16 @@ class APIManager: ObservableObject {
             method: .PUT,
             body: body,
             responseType: UpdateStudentRoomResponse.self
+        )
+    }
+    
+    // MARK: - Check-In/Out Status APIs
+    
+    func getLatestCheckInOut(userId: String, userType: String) async throws -> LatestCheckInOutResponse {
+        return try await makeRequest(
+            endpoint: "/user/check-in-out/latest?userId=\(userId)&userType=\(userType)",
+            method: .GET,
+            responseType: LatestCheckInOutResponse.self
         )
     }
     
@@ -1510,6 +1565,120 @@ struct BasicRoomInfo: Codable {
     let number: String
 }
 
+// MARK: - Latest Check-In/Out Response
+
+struct LatestCheckInOutResponse: Codable {
+    let success: Bool
+    let data: LatestCheckInOutData?
+    let message: String?
+}
+
+struct LatestCheckInOutData: Codable {
+    let id: String
+    let type: String // "CHECK_IN" or "CHECK_OUT"
+    let method: String
+    let timestamp: String
+    let room: LatestCheckInOutRoom?
+    let pg: LatestCheckInOutPG
+    let nfcTagId: String?
+    let biometricVerified: Bool
+    let webAuthnVerified: Bool
+    let latitude: Double?
+    let longitude: Double?
+    let distanceFromPG: Double?
+    let deviceId: String?
+    let metadata: FlexibleMetadata?
+    let createdAt: String
+    
+    enum CodingKeys: String, CodingKey {
+        case id, type, method, timestamp, room, pg, nfcTagId
+        case biometricVerified, webAuthnVerified, latitude, longitude
+        case distanceFromPG, deviceId, metadata, createdAt
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        type = try container.decode(String.self, forKey: .type)
+        method = try container.decode(String.self, forKey: .method)
+        timestamp = try container.decode(String.self, forKey: .timestamp)
+        room = try container.decodeIfPresent(LatestCheckInOutRoom.self, forKey: .room)
+        pg = try container.decode(LatestCheckInOutPG.self, forKey: .pg)
+        nfcTagId = try container.decodeIfPresent(String.self, forKey: .nfcTagId)
+        biometricVerified = try container.decode(Bool.self, forKey: .biometricVerified)
+        webAuthnVerified = try container.decode(Bool.self, forKey: .webAuthnVerified)
+        latitude = try container.decodeIfPresent(Double.self, forKey: .latitude)
+        longitude = try container.decodeIfPresent(Double.self, forKey: .longitude)
+        distanceFromPG = try container.decodeIfPresent(Double.self, forKey: .distanceFromPG)
+        deviceId = try container.decodeIfPresent(String.self, forKey: .deviceId)
+        createdAt = try container.decode(String.self, forKey: .createdAt)
+        
+        // Handle metadata as flexible JSON - decode if present, otherwise nil
+        if container.contains(.metadata) {
+            if let metadataDict = try? container.decode([String: FlexibleMetadataValue].self, forKey: .metadata) {
+                metadata = FlexibleMetadata(values: metadataDict)
+            } else {
+                metadata = nil
+            }
+        } else {
+            metadata = nil
+        }
+    }
+}
+
+// Helper types for flexible metadata decoding
+struct FlexibleMetadata: Codable {
+    let values: [String: FlexibleMetadataValue]
+}
+
+enum FlexibleMetadataValue: Codable {
+    case string(String)
+    case bool(Bool)
+    case number(Double)
+    case null
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        
+        if container.decodeNil() {
+            self = .null
+        } else if let bool = try? container.decode(Bool.self) {
+            self = .bool(bool)
+        } else if let number = try? container.decode(Double.self) {
+            self = .number(number)
+        } else if let string = try? container.decode(String.self) {
+            self = .string(string)
+        } else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Cannot decode FlexibleMetadataValue")
+        }
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value):
+            try container.encode(value)
+        case .bool(let value):
+            try container.encode(value)
+        case .number(let value):
+            try container.encode(value)
+        case .null:
+            try container.encodeNil()
+        }
+    }
+}
+
+struct LatestCheckInOutRoom: Codable {
+    let id: String
+    let number: String
+    let type: String?
+}
+
+struct LatestCheckInOutPG: Codable {
+    let id: String
+    let name: String
+}
+
 struct RoomsListResponse: Codable {
     let success: Bool
     let data: [RoomListItem]
@@ -1521,8 +1690,26 @@ struct RoomListItem: Codable, Identifiable {
     let type: String
     let bedCount: Int
     let occupiedBeds: Int
+    let students: [Student]?
     let availableBeds: Int
+    
+    enum CodingKeys: String, CodingKey {
+        case id, number, type, bedCount, occupiedBeds, availableBeds, students
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        number = try container.decode(String.self, forKey: .number)
+        type = try container.decode(String.self, forKey: .type)
+        bedCount = try container.decode(Int.self, forKey: .bedCount)
+        occupiedBeds = try container.decode(Int.self, forKey: .occupiedBeds)
+        availableBeds = try container.decode(Int.self, forKey: .availableBeds)
+        // Students is optional - decode if present, otherwise use nil
+        students = try? container.decode([Student].self, forKey: .students)
+    }
 }
+
 
 struct RoomData: Codable, Identifiable {
     let id: String
@@ -1556,23 +1743,8 @@ struct RoomDetailData: Codable {
     let order: Int?
     let occupiedBeds: Int?
     let availableBeds: Int?
-    let students: [RoomDetailStudent]
+    let students: [Student]
 }
 
-struct RoomDetailStudent: Codable, Identifiable {
-    let id: String
-    let name: String
-    let user: RoomDetailStudentUser?
-    
-    var displayName: String {
-        user?.name ?? name
-    }
-}
 
-struct RoomDetailStudentUser: Codable {
-    let id: String
-    let name: String
-    let email: String?
-    let phone: String?
-}
 

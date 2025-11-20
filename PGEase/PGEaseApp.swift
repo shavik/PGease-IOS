@@ -14,6 +14,13 @@ struct PGEaseApp: App {
     @StateObject private var onboardingManager = OnboardingManager()
     @StateObject private var checkInOutManager = CheckInOutManager()
     @StateObject private var appRouter = AppRouter()
+    @StateObject private var appStore: AppStore
+
+    init() {
+        let auth = AuthManager()
+        _authManager = StateObject(wrappedValue: auth)
+        _appStore = StateObject(wrappedValue: AppStore(authManager: auth))
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -24,6 +31,7 @@ struct PGEaseApp: App {
                         .environmentObject(authManager)
                         .environmentObject(biometricAuthManager)
                         .environmentObject(checkInOutManager)
+                        .environmentObject(appStore)
                         .onAppear {
                             print("🚀 App: Main app appeared - User role: \(authManager.userRole.displayName)")
                         }
@@ -370,7 +378,11 @@ struct ProfileView: View {
                         Text("Name: \(user.name)")
                         Text("Role: \(authManager.userRole.displayName)")
                         Text("PG: \(user.pgName)")
+                        if let roomNumber = authManager.currentUser?.roomNumber {
+                            Text("Room: \(roomNumber)")
+                        }
                     }
+
                 }
                 
                 if authManager.userRole == .pgAdmin {

@@ -48,6 +48,11 @@ struct AttendanceView: View {
             }
             checkInOutManager.requestLocationPermission()
             checkInOutManager.startLocationUpdates()
+            
+            // Refresh status from database when view appears
+            Task {
+                await checkInOutManager.refreshCheckInStatus()
+            }
         }
         .onChange(of: checkInOutManager.isCheckedIn) { newValue in
             guard hasInitializedStatus else { return }

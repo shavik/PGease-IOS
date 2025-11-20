@@ -2,10 +2,10 @@ import SwiftUI
 
 struct ChatView: View {
     @State private var messageText = ""
-    @State private var messages: [ChatMessage] = [
-        ChatMessage(text: "Welcome to the chat! How can I help you today?", isFromUser: false, timestamp: Date()),
-        ChatMessage(text: "Hi! I have a question about my room service.", isFromUser: true, timestamp: Date()),
-        ChatMessage(text: "I'd be happy to help with your room service inquiry. What do you need?", isFromUser: false, timestamp: Date())
+    @State private var messages: [ChatBubbleMessage] = [
+        ChatBubbleMessage(text: "Welcome to the chat! How can I help you today?", isFromUser: false, timestamp: Date()),
+        ChatBubbleMessage(text: "Hi! I have a question about my room service.", isFromUser: true, timestamp: Date()),
+        ChatBubbleMessage(text: "I'd be happy to help with your room service inquiry. What do you need?", isFromUser: false, timestamp: Date())
     ]
 
     var body: some View {
@@ -51,7 +51,7 @@ struct ChatView: View {
     private func sendMessage() {
         guard !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
 
-        let newMessage = ChatMessage(
+        let newMessage = ChatBubbleMessage(
             text: messageText,
             isFromUser: true,
             timestamp: Date()
@@ -70,7 +70,7 @@ struct ChatView: View {
                 "I can help you with that. Let me provide you with the details."
             ]
 
-            let response = ChatMessage(
+            let response = ChatBubbleMessage(
                 text: responses.randomElement() ?? "I'm here to help!",
                 isFromUser: false,
                 timestamp: Date()
@@ -82,7 +82,7 @@ struct ChatView: View {
 
     private func clearChat() {
         messages.removeAll()
-        messages.append(ChatMessage(
+        messages.append(ChatBubbleMessage(
             text: "Chat cleared. How can I help you today?",
             isFromUser: false,
             timestamp: Date()
@@ -90,7 +90,7 @@ struct ChatView: View {
     }
 }
 
-struct ChatMessage: Identifiable {
+struct ChatBubbleMessage: Identifiable {
     let id = UUID()
     let text: String
     let isFromUser: Bool
@@ -98,7 +98,7 @@ struct ChatMessage: Identifiable {
 }
 
 struct MessageBubble: View {
-    let message: ChatMessage
+    let message: ChatBubbleMessage
 
     var body: some View {
         HStack {
@@ -205,3 +205,4 @@ struct RoundedCorner: Shape {
 #Preview {
     ChatView()
 }
+

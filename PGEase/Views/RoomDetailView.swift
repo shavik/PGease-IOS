@@ -2,11 +2,11 @@ import SwiftUI
 
 struct RoomDetailView: View {
     @EnvironmentObject var authManager: AuthManager
+    @ObservedObject var pgStore: PGStore
     
     let roomId: String
     let initialRoomNumber: String
     
-    @State private var roomDetail: RoomDetailData?
     @State private var editedNumber: String = ""
     @State private var editedType: RoomTypeOption = .single
     @State private var editedBedCount: Int = 1
@@ -15,6 +15,11 @@ struct RoomDetailView: View {
     @State private var isLoading = true
     @State private var isSaving = false
     @State private var errorMessage: String?
+    
+    // Get room from store
+    private var room: Room? {
+        pgStore.state.rooms[roomId]
+    }
     
     @State private var existingTag: NFCTagInfo?
     @State private var isLoadingTag = false
@@ -27,7 +32,7 @@ struct RoomDetailView: View {
                     ProgressView("Loading room...")
                         .frame(maxWidth: .infinity, alignment: .center)
                 }
-            } else if let roomDetail {
+            } else if let room = room {
                 Section("Room Information") {
                     TextField("Room Number", text: $editedNumber)
                         .textInputAutocapitalization(.characters)
@@ -46,12 +51,20 @@ struct RoomDetailView: View {
                 }
                 
                 Section("Occupants") {
-                    if roomDetail.students.isEmpty {
+                    if room.students.isEmpty {
                         Text("No active occupants assigned.")
                             .foregroundColor(.secondary)
                     } else {
-                        ForEach(roomDetail.students) { student in
-                            Text(student.displayName)
+                        ForEach(room.students) { student in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(student.name.isEmpty ? "Student \(student.id)" : student.name)
+                                    .font(.body)
+                                if let email = student.email {
+                                    Text(email)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
                         }
                     }
                 }
@@ -103,10 +116,10 @@ struct RoomDetailView: View {
                 }
             }
         }
-        .navigationTitle("Room \(roomDetail?.number ?? initialRoomNumber)")
+        .navigationTitle("Room \(room?.number ?? initialRoomNumber)")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if !isLoading && roomDetail != nil {
+            if !isLoading && room != nil {
                 ToolbarItem(placement: .confirmationAction) {
                     Button {
                         saveChanges()
@@ -127,8 +140,8 @@ struct RoomDetailView: View {
         .sheet(isPresented: $showingTagWriter, onDismiss: {
             Task { await loadTagInfo() }
         }) {
-            if let roomDetail {
-                NFCTagWriteView(roomId: roomDetail.id, roomNumber: roomDetail.number)
+            if let room = room {
+                NFCTagWriteView(roomId: room.id, roomNumber: room.number)
                     .environmentObject(authManager)
             }
         }
@@ -152,19 +165,33 @@ struct RoomDetailView: View {
             return
         }
         
+        // Check if room is already in store
+        if let existingRoom = pgStore.state.rooms[roomId] {
+            await MainActor.run {
+                self.editedNumber = existingRoom.number
+                self.editedType = RoomTypeOption.from(existingRoom.type)
+                self.editedBedCount = existingRoom.bedCount
+                self.editedDetails = existingRoom.details ?? ""
+                self.isLoading = false
+            }
+            await loadTagInfo()
+            return
+        }
+        
         await MainActor.run {
             isLoading = true
             errorMessage = nil
         }
         
         do {
-            let detail = try await APIManager.shared.getRoomDetail(pgId: pgId, roomId: roomId)
+            // Load room detail into store
+            let loadedRoom = try await pgStore.loadRoomDetail(pgId: pgId, roomId: roomId)
+            
             await MainActor.run {
-                self.roomDetail = detail
-                self.editedNumber = detail.number
-                self.editedType = RoomTypeOption.from(detail.type)
-                self.editedBedCount = detail.bedCount
-                self.editedDetails = detail.details ?? ""
+                self.editedNumber = loadedRoom.number
+                self.editedType = RoomTypeOption.from(loadedRoom.type)
+                self.editedBedCount = loadedRoom.bedCount
+                self.editedDetails = loadedRoom.details ?? ""
                 self.isLoading = false
             }
             await loadTagInfo()
@@ -178,11 +205,20 @@ struct RoomDetailView: View {
     
     @Sendable
     private func loadTagInfo() async {
-        guard let pgId = authManager.currentPgId else { return }
+        // NFC tag loading will be handled by NFC store when implemented
+        // For now, we'll skip this to avoid direct API calls
+        guard let pgId = authManager.currentPgId else {
+            await MainActor.run {
+                errorMessage = "Please select a PG first."
+                isLoadingTag = false
+            }
+            return
+        }
         await MainActor.run {
             isLoadingTag = true
+            //existingTag = nil
         }
-        
+
         do {
             let response = try await APIManager.shared.listNFCTags(pgId: pgId, roomId: roomId)
             await MainActor.run {
@@ -192,8 +228,10 @@ struct RoomDetailView: View {
         } catch {
             await MainActor.run {
                 isLoadingTag = false
+                existingTag = nil
             }
         }
+
     }
     
     private func saveChanges() {
@@ -211,7 +249,8 @@ struct RoomDetailView: View {
         
         Task {
             do {
-                _ = try await APIManager.shared.updateRoom(
+                // Use store's updateRoom which handles optimistic updates
+                _ = try await pgStore.updateRoom(
                     pgId: pgId,
                     roomId: roomId,
                     number: editedNumber.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -220,10 +259,21 @@ struct RoomDetailView: View {
                     details: editedDetails.isEmpty ? nil : editedDetails
                 )
                 
-                await loadRoom()
-                
-                await MainActor.run {
-                    isSaving = false
+                // Update local state from store
+                if let updatedRoom = pgStore.state.rooms[roomId] {
+                    await MainActor.run {
+                        self.editedNumber = updatedRoom.number
+                        self.editedType = RoomTypeOption.from(updatedRoom.type)
+                        self.editedBedCount = updatedRoom.bedCount
+                        self.editedDetails = updatedRoom.details ?? ""
+                        self.isSaving = false
+                    }
+                } else {
+                    // Reload if not in store
+                    await loadRoom()
+                    await MainActor.run {
+                        self.isSaving = false
+                    }
                 }
             } catch {
                 await MainActor.run {

@@ -25,8 +25,7 @@ class CheckInOutManager: NSObject, ObservableObject {
     override init() {
         super.init()
         setupLocationManager()
-        loadCheckInStatus()
-
+        
         // Load identifiers from stored state
         if let storedUserId = UserDefaults.standard.string(forKey: "userId") {
             self.userId = storedUserId
@@ -134,8 +133,10 @@ class CheckInOutManager: NSObject, ObservableObject {
                 self.isCheckedIn = true
                 self.lastCheckInTime = Date()
                 self.isLoading = false
-                self.saveCheckInStatus()
             }
+            
+            // Refresh status from database to ensure sync
+            await refreshCheckInStatus()
             
         } catch {
             await MainActor.run {
@@ -199,8 +200,10 @@ class CheckInOutManager: NSObject, ObservableObject {
                 self.isCheckedIn = false
                 self.lastCheckOutTime = Date()
                 self.isLoading = false
-                self.saveCheckInStatus()
             }
+            
+            // Refresh status from database to ensure sync
+            await refreshCheckInStatus()
             
         } catch {
             await MainActor.run {
@@ -382,20 +385,56 @@ class CheckInOutManager: NSObject, ObservableObject {
         return nil
     }
     
-    private func saveCheckInStatus() {
-        UserDefaults.standard.set(isCheckedIn, forKey: "isCheckedIn")
-        if let checkInTime = lastCheckInTime {
-            UserDefaults.standard.set(checkInTime, forKey: "lastCheckInTime")
-        }
-        if let checkOutTime = lastCheckOutTime {
-            UserDefaults.standard.set(checkOutTime, forKey: "lastCheckOutTime")
-        }
-    }
+    // MARK: - Status Refresh from Database
     
-    private func loadCheckInStatus() {
-        isCheckedIn = UserDefaults.standard.bool(forKey: "isCheckedIn")
-        lastCheckInTime = UserDefaults.standard.object(forKey: "lastCheckInTime") as? Date
-        lastCheckOutTime = UserDefaults.standard.object(forKey: "lastCheckOutTime") as? Date
+    /// Refresh check-in/out status from database (single source of truth)
+    func refreshCheckInStatus() async {
+        guard let accountUserId = getAccountUserId() else {
+            print("⚠️ [CheckInOutManager] Cannot refresh status - userId not available")
+            return
+        }
+        
+        do {
+            let response = try await apiManager.getLatestCheckInOut(
+                userId: accountUserId,
+                userType: userType
+            )
+            
+            await MainActor.run {
+                if let latestLog = response.data {
+                    // Determine status based on latest log type
+                    self.isCheckedIn = latestLog.type == "CHECK_IN"
+                    
+                    // Parse timestamp
+                    let formatter = ISO8601DateFormatter()
+                    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                    
+                    if let timestamp = formatter.date(from: latestLog.timestamp) {
+                        if latestLog.type == "CHECK_IN" {
+                            self.lastCheckInTime = timestamp
+                        } else {
+                            self.lastCheckOutTime = timestamp
+                        }
+                    }
+                    
+                    print("✅ [CheckInOutManager] Status refreshed from database: \(latestLog.type) at \(latestLog.timestamp)")
+                } else {
+                    // No logs found - default to checked out
+                    self.isCheckedIn = false
+                    self.lastCheckInTime = nil
+                    self.lastCheckOutTime = nil
+                    print("ℹ️ [CheckInOutManager] No check-in/out logs found - defaulting to checked out")
+                }
+            }
+        } catch {
+            print("❌ [CheckInOutManager] Failed to refresh status: \(error.localizedDescription)")
+            // Fallback to UserDefaults if API fails (backward compatibility)
+            await MainActor.run {
+                self.isCheckedIn = UserDefaults.standard.bool(forKey: "isCheckedIn")
+                self.lastCheckInTime = UserDefaults.standard.object(forKey: "lastCheckInTime") as? Date
+                self.lastCheckOutTime = UserDefaults.standard.object(forKey: "lastCheckOutTime") as? Date
+            }
+        }
     }
     
     // MARK: - Computed Properties

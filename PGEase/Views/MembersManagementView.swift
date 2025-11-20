@@ -9,13 +9,80 @@ import SwiftUI
 
 struct MembersManagementView: View {
     @EnvironmentObject var authManager: AuthManager
-    @StateObject private var viewModel = MembersViewModel()
+    @EnvironmentObject var appStore: AppStore
     
     @State private var showAddMember = false
     @State private var selectedMember: UserListItem?
     @State private var showMemberDetail = false
     @State private var searchText = ""
     @State private var selectedFilter: String? = nil
+    
+    // Helper view that observes pgStore
+    var body: some View {
+        MembersManagementContentView(
+            pgStore: appStore.pgStore,
+            showAddMember: $showAddMember,
+            selectedMember: $selectedMember,
+            showMemberDetail: $showMemberDetail,
+            searchText: $searchText,
+            selectedFilter: $selectedFilter
+        )
+        .environmentObject(authManager)
+    }
+}
+
+// Helper view that directly observes pgStore
+private struct MembersManagementContentView: View {
+    @ObservedObject var pgStore: PGStore
+    @EnvironmentObject var authManager: AuthManager
+    
+    @Binding var showAddMember: Bool
+    @Binding var selectedMember: UserListItem?
+    @Binding var showMemberDetail: Bool
+    @Binding var searchText: String
+    @Binding var selectedFilter: String?
+    
+    // Computed properties from store
+    private var isLoading: Bool {
+        pgStore.state.membersLoading
+    }
+    
+    private var errorMessage: String? {
+        pgStore.state.membersError
+    }
+    
+    // Get all members from store and filter locally
+    private var members: [UserListItem] {
+        guard let pgId = authManager.currentPgId else { return [] }
+        let memberIds = pgStore.state.membersByPg[pgId] ?? []
+        return memberIds.compactMap { userId -> UserListItem? in
+            guard let member = pgStore.state.members[userId] else { return nil }
+            // Get room number from room data if available (for students)
+            let roomNumber: String? = {
+                if let roomId = member.roomId, let room = pgStore.state.rooms[roomId] {
+                    return room.number
+                }
+                return member.roomNumber // Fallback to roomNumber from API
+            }()
+            // Return member with updated room number if we have it from store
+            return UserListItem(
+                id: member.id,
+                name: member.name,
+                email: member.email,
+                phone: member.phone,
+                studentId: member.studentId,
+                roomId: member.roomId,
+                roomNumber: roomNumber,
+                role: member.role,
+                status: member.status,
+                accessStatus: member.accessStatus,
+                inviteStatus: member.inviteStatus,
+                createdAt: member.createdAt,
+                updatedAt: member.updatedAt
+            )
+        }
+        .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
     
     var body: some View {
         NavigationView {
@@ -55,7 +122,7 @@ struct MembersManagementView: View {
                 .padding(.bottom, 8)
                 
                 // Members List
-                if viewModel.isLoading {
+                if isLoading {
                     Spacer()
                     ProgressView("Loading members...")
                     Spacer()
@@ -102,23 +169,14 @@ struct MembersManagementView: View {
                 }
             }
             .sheet(isPresented: $showAddMember) {
-                AddMemberView()
+                AddMemberView(pgStore: pgStore)
                     .environmentObject(authManager)
-                    .onDisappear {
-                        Task {
-                            await loadMembers()
-                        }
-                    }
+                    // No need to reload on dismiss - store already updated optimistically
             }
             .sheet(item: $selectedMember) { member in
-                MemberDetailView(member: member)
+                MemberDetailView(member: member, pgStore: pgStore)
                     .environmentObject(authManager)
-                    .onDisappear {
-                        // Reload members when detail view is dismissed (to reflect room changes)
-                        Task {
-                            await loadMembers()
-                        }
-                    }
+                    // No need to reload on dismiss - store already updated optimistically
             }
             .task {
                 print("📋 [Members] Task triggered - loading members...")
@@ -131,20 +189,25 @@ struct MembersManagementView: View {
             }
             .onAppear {
                 print("📋 [Members] View appeared - pgId: \(authManager.currentPgId ?? "nil")")
-                print("📋 [Members] Current members count: \(viewModel.members.count)")
+                print("📋 [Members] Current members count: \(members.count)")
             }
             .onChange(of: authManager.currentPgId) { oldValue, newValue in
                 print("📋 [Members] currentPgId changed from \(oldValue ?? "nil") to \(newValue ?? "nil")")
-                if newValue != nil && viewModel.members.isEmpty {
+                if newValue != nil && members.isEmpty {
                     Task {
                         await loadMembers()
                     }
                 }
             }
-            .alert("Error", isPresented: $viewModel.showError) {
-                Button("OK", role: .cancel) {}
+            .alert("Error", isPresented: Binding(
+                get: { errorMessage != nil },
+                set: { _ in pgStore.clearMembersError() }
+            )) {
+                Button("OK", role: .cancel) {
+                    pgStore.clearMembersError()
+                }
             } message: {
-                Text(viewModel.errorMessage)
+                Text(errorMessage ?? "")
             }
         }
     }
@@ -159,27 +222,28 @@ struct MembersManagementView: View {
     }
     
     private var filteredMembers: [UserListItem] {
-        var members = viewModel.members
+        var filtered = members
         
         // Apply role filter
         if let filter = selectedFilter {
-            members = members.filter { $0.role == filter }
+            filtered = filtered.filter { $0.role == filter }
         }
         
         // Apply search
         if !searchText.isEmpty {
-            members = members.filter { member in
+            filtered = filtered.filter { member in
                 member.name.localizedCaseInsensitiveContains(searchText) ||
                 member.email.localizedCaseInsensitiveContains(searchText) ||
                 (member.phone?.localizedCaseInsensitiveContains(searchText) ?? false)
             }
         }
         
-        return members
+        return filtered
     }
     
     // MARK: - Methods
     
+    @Sendable
     private func loadMembers() async {
         guard let pgId = authManager.currentPgId else {
             print("❌ [Members] Cannot load - currentPgId is nil")
@@ -187,7 +251,13 @@ struct MembersManagementView: View {
             return
         }
         print("📋 [Members] Loading members for PG: \(pgId)")
-        await viewModel.loadMembers(pgId: pgId, role: selectedFilter)
+        // Load all members (no role filter - we filter locally)
+        do {
+            try await pgStore.loadMembers(pgId: pgId, role: nil)
+            print("✅ [Members] Members loaded successfully")
+        } catch {
+            print("❌ [Members] Failed to load members: \(error.localizedDescription)")
+        }
     }
 }
 
@@ -341,30 +411,4 @@ struct FilterChip: View {
     }
 }
 
-// MARK: - View Model
-
-@MainActor
-class MembersViewModel: ObservableObject {
-    @Published var members: [UserListItem] = []
-    @Published var isLoading = false
-    @Published var showError = false
-    @Published var errorMessage = ""
-    
-    func loadMembers(pgId: String, role: String? = nil) async {
-        print("📋 [MembersViewModel] Loading members for PG: \(pgId), role: \(role ?? "all")")
-        isLoading = true
-        
-        do {
-            let response = try await APIManager.shared.listUsers(pgId: pgId, role: role)
-            members = response.users
-            print("✅ [MembersViewModel] Loaded \(members.count) members")
-        } catch {
-            errorMessage = "Failed to load members: \(error.localizedDescription)"
-            showError = true
-            print("❌ [MembersViewModel] Load members error: \(error)")
-        }
-        
-        isLoading = false
-    }
-}
 

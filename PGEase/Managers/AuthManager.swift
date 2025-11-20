@@ -129,7 +129,8 @@ class AuthManager: ObservableObject {
         pgId: String,
         pgName: String,
         userName: String,
-        profileId: String? = nil
+        profileId: String? = nil,
+        roomNumber: String? = nil
     ) {
         // Set authentication state
         self.isAuthenticated = true
@@ -149,7 +150,7 @@ class AuthManager: ObservableObject {
             pgId: pgId,
             pgName: pgName,
             profileId: profileId,
-            roomNumber: nil,
+            roomNumber: roomNumber,
             deviceId: UIDevice.current.identifierForVendor?.uuidString,
             biometricSetup: false,
             accessStatus: "ACTIVE"

@@ -10,6 +10,7 @@ import SwiftUI
 struct AddMemberView: View {
     @Environment(\.dismiss) var dismiss
     @EnvironmentObject var authManager: AuthManager
+    @ObservedObject var pgStore: PGStore
     
     @State private var name = ""
     @State private var email = ""
@@ -223,20 +224,18 @@ struct AddMemberView: View {
         
         Task {
             do {
-                let response = try await APIManager.shared.createUser(
+                let userId = try await pgStore.createMember(
+                    pgId: pgId,
                     name: name,
                     email: email,
                     phone: phone.isEmpty ? nil : phone,
                     role: role.rawValue,
-                    pgId: pgId,
                     createdBy: creatorId
                 )
                 
-                if response.success {
-                    createdUserId = response.userId
-                    showSuccess = true
-                    print("✅ Member created: \(response.userId)")
-                }
+                createdUserId = userId
+                showSuccess = true
+                print("✅ Member created: \(userId)")
             } catch {
                 errorMessage = "Failed to create member: \(error.localizedDescription)"
                 showError = true
@@ -283,8 +282,8 @@ struct AddMemberView: View {
     }
 }
 
-#Preview {
-    AddMemberView()
-        .environmentObject(AuthManager())
-}
+//#Preview {
+//    AddMemberView pgStore: <#PGStore#>)
+//        .environmentObject(AuthManager())
+//}
 
